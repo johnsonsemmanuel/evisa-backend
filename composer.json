@@ -12,7 +12,7 @@
         "laravel/sanctum": "^4.3",
         "laravel/tinker": "^2.10.1",
         "simplesoftwareio/simple-qrcode": "^4.2",
-        "spatie/laravel-permission": "^6.9",
+        "spatie/laravel-permission": "^7.2",
         "symfony/clock": "^7.0",
         "symfony/css-selector": "^7.0",
         "symfony/event-dispatcher": "^7.0",
