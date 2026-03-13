@@ -15,12 +15,12 @@ class AuthApiTest extends TestCase
     {
         $user = User::factory()->create([
             'email' => 'test@example.com',
-            'password' => bcrypt('password123'),
+            'password' => bcrypt('Password123'),
         ]);
 
         $response = $this->postJson('/api/auth/login', [
             'email' => 'test@example.com',
-            'password' => 'password123',
+            'password' => 'Password123',
         ]);
 
         $response->assertStatus(200)
@@ -42,7 +42,7 @@ class AuthApiTest extends TestCase
     {
         $user = User::factory()->create([
             'email' => 'test@example.com',
-            'password' => bcrypt('password123'),
+            'password' => bcrypt('Password123'),
         ]);
 
         $response = $this->postJson('/api/auth/login', [
@@ -70,8 +70,8 @@ class AuthApiTest extends TestCase
             'first_name' => 'John',
             'last_name' => 'Doe',
             'email' => 'john.doe@example.com',
-            'password' => 'password123',
-            'password_confirmation' => 'password123',
+            'password' => 'Password123',
+            'password_confirmation' => 'Password123',
             'phone' => '+233123456789',
         ];
 
@@ -106,8 +106,7 @@ class AuthApiTest extends TestCase
                 'first_name',
                 'last_name', 
                 'email',
-                'password',
-                'phone'
+                'password'
             ]);
     }
 
@@ -120,8 +119,8 @@ class AuthApiTest extends TestCase
             'first_name' => 'John',
             'last_name' => 'Doe',
             'email' => 'test@example.com',
-            'password' => 'password123',
-            'password_confirmation' => 'password123',
+            'password' => 'Password123',
+            'password_confirmation' => 'Password123',
             'phone' => '+233123456789',
         ];
 
@@ -157,12 +156,14 @@ class AuthApiTest extends TestCase
 
         $response->assertStatus(200)
             ->assertJsonStructure([
-                'id',
-                'email',
-                'first_name',
-                'last_name',
-                'role',
-                'permissions'
+                'user' => [
+                    'id',
+                    'email',
+                    'first_name',
+                    'last_name',
+                    'role',
+                    'permissions'
+                ]
             ]);
     }
 

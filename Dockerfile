@@ -1,10 +1,12 @@
-FROM dunglas/frankenphp:php8.2-bookworm
+FROM dunglas/frankenphp:php8.3-bookworm
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     git \
     curl \
     libpng-dev \
+    libjpeg-dev \
+    libfreetype6-dev \
     libonig-dev \
     libxml2-dev \
     zip \
@@ -15,8 +17,9 @@ RUN apt-get update && apt-get install -y \
 # Clear cache
 RUN apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install PHP extensions
-RUN docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd
+# Configure and install PHP extensions
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd
 
 # Get latest Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
@@ -27,8 +30,8 @@ WORKDIR /app
 # Copy composer files
 COPY composer.json composer.lock* ./
 
-# Install PHP dependencies
-RUN composer install --optimize-autoloader --no-scripts --no-interaction
+# Install PHP dependencies with platform requirements ignored for problematic packages
+RUN composer install --optimize-autoloader --no-scripts --no-interaction --ignore-platform-req=ext-gd
 
 # Copy package.json
 COPY package*.json ./

@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Models\VisaType;
 use App\Services\ApplicationRoutingService;
 use App\Services\TierClassificationService;
+use App\Services\RiskScreeningService;
 use App\Services\SlaService;
 
 class ApplicationRoutingServiceTest extends TestCase
@@ -19,7 +20,8 @@ class ApplicationRoutingServiceTest extends TestCase
         parent::setUp();
         $this->routingService = new ApplicationRoutingService(
             new TierClassificationService(),
-            new SlaService()
+            new SlaService(),
+            new RiskScreeningService()
         );
     }
 

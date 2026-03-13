@@ -15,11 +15,11 @@ class UserSecurityTest extends TestCase
     public function password_is_hashed_when_creating_user()
     {
         $user = User::factory()->create([
-            'password' => 'plaintext-password'
+            'password' => 'Password123'
         ]);
 
-        $this->assertNotEquals('plaintext-password', $user->password);
-        $this->assertTrue(Hash::check('plaintext-password', $user->password));
+        $this->assertNotEquals('Password123', $user->password);
+        $this->assertTrue(Hash::check('Password123', $user->password));
     }
 
     /** @test */
@@ -29,53 +29,53 @@ class UserSecurityTest extends TestCase
         $oldPasswordHash = $user->password;
 
         $user->update([
-            'password' => Hash::make('new-password')
+            'password' => Hash::make('NewPassword123')
         ]);
 
         $this->assertNotEquals($oldPasswordHash, $user->fresh()->password);
-        $this->assertTrue(Hash::check('new-password', $user->fresh()->password));
+        $this->assertTrue(Hash::check('NewPassword123', $user->fresh()->password));
     }
 
     /** @test */
     public function user_can_change_password_with_correct_current_password()
     {
         $user = User::factory()->create([
-            'password' => Hash::make('current-password')
+            'password' => Hash::make('CurrentPassword123')
         ]);
 
         $token = $user->createToken('test-token')->plainTextToken;
 
         $response = $this->putJson('/api/auth/password', [
-            'current_password' => 'current-password',
-            'password' => 'new-password',
-            'password_confirmation' => 'new-password'
+            'current_password' => 'CurrentPassword123',
+            'password' => 'NewPassword123',
+            'password_confirmation' => 'NewPassword123'
         ], [
             'Authorization' => 'Bearer ' . $token
         ]);
 
         $response->assertStatus(200);
-        $this->assertTrue(Hash::check('new-password', $user->fresh()->password));
+        $this->assertTrue(Hash::check('NewPassword123', $user->fresh()->password));
     }
 
     /** @test */
     public function user_cannot_change_password_with_wrong_current_password()
     {
         $user = User::factory()->create([
-            'password' => Hash::make('current-password')
+            'password' => Hash::make('CurrentPassword123')
         ]);
 
         $token = $user->createToken('test-token')->plainTextToken;
 
         $response = $this->putJson('/api/auth/password', [
-            'current_password' => 'wrong-password',
-            'password' => 'new-password',
-            'password_confirmation' => 'new-password'
+            'current_password' => 'WrongPassword123',
+            'password' => 'NewPassword123',
+            'password_confirmation' => 'NewPassword123'
         ], [
             'Authorization' => 'Bearer ' . $token
         ]);
 
         $response->assertStatus(422);
-        $this->assertTrue(Hash::check('current-password', $user->fresh()->password));
+        $this->assertTrue(Hash::check('CurrentPassword123', $user->fresh()->password));
     }
 
     /** @test */

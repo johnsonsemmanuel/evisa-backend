@@ -5,9 +5,12 @@ namespace Tests\Unit;
 use Tests\TestCase;
 use App\Services\SlaService;
 use Carbon\Carbon;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 
 class SlaServiceTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected SlaService $slaService;
 
     protected function setUp(): void
