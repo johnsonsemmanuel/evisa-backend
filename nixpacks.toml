@@ -1,8 +1,8 @@
 [phases.setup]
-nixPkgs = ["php82", "php82Extensions.gd"]
+nixPkgs = ["php82", "php82Extensions.gd", "php82Extensions.pdo", "php82Extensions.pdo_mysql", "php82Extensions.mbstring", "php82Extensions.xml", "php82Extensions.curl"]
 
 [phases.install]
-cmds = ["composer install --optimize-autoloader --no-scripts --no-interaction --ignore-platform-req=ext-gd --ignore-platform-req=php"]
+cmds = ["composer install --optimize-autoloader --no-scripts --no-interaction --ignore-platform-reqs"]
 
 [phases.build]
 cmds = [
