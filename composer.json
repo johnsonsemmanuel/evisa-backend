@@ -36,8 +36,11 @@
         }
     },
     "scripts": {
+        "railway-install": [
+            "composer install --optimize-autoloader --no-scripts --no-interaction --ignore-platform-req=ext-gd --ignore-platform-req=php"
+        ],
         "setup": [
-            "composer install",
+            "composer install --ignore-platform-req=ext-gd",
             "@php -r \"file_exists('.env') || copy('.env.example', '.env');\"",
             "@php artisan key:generate",
             "@php artisan migrate --force",

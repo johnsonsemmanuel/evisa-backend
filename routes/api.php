@@ -17,6 +17,11 @@ use App\Http\Controllers\Api\VerificationController;
 use App\Http\Controllers\Api\PricingController;
 use Illuminate\Support\Facades\Route;
 
+// Health check endpoint for Railway
+Route::get('/health', function () {
+    return response()->json(['status' => 'ok', 'timestamp' => now()]);
+});
+
 /*
 |--------------------------------------------------------------------------
 | Public Routes
