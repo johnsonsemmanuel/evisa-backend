@@ -254,7 +254,7 @@ class ApplicationService
         'approved'                   => ['issued', 'under_review'],
         'denied'                     => ['under_review'],
         'issued'                     => [],
-        'cancelled'                  => ['draft'],
+        'cancelled'                  => [], // Cancelled applications cannot go back to draft
     ];
 
     /**

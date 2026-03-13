@@ -178,6 +178,7 @@ Route::middleware(['auth:sanctum', 'api.error', \App\Http\Middleware\SetLocale::
         Route::delete('/applications/{application}', [ApplicationController::class, 'destroy']);
         Route::put('/applications/{application}/step', [ApplicationController::class, 'updateStep']);
         Route::post('/applications/{application}/submit', [ApplicationController::class, 'submit']);
+        Route::post('/applications/{application}/submit-without-payment', [ApplicationController::class, 'submitWithoutPayment']);
         Route::post('/applications/{application}/submit-response', [ApplicationController::class, 'submitResponse']);
         Route::post('/applications/{application}/pay', [ApplicationController::class, 'initiatePayment']);
         Route::get('/applications/{application}/status', [ApplicationController::class, 'status']);
@@ -196,6 +197,7 @@ Route::middleware(['auth:sanctum', 'api.error', \App\Http\Middleware\SetLocale::
         Route::post('/applications/{application}/payment/initialize', [\App\Http\Controllers\Api\PaymentController::class, 'initialize']);
         Route::post('/payment/verify', [\App\Http\Controllers\Api\Applicant\PaymentController::class, 'verify']);
         Route::post('/payment/simulate', [\App\Http\Controllers\Api\Applicant\PaymentController::class, 'simulatePayment']);
+        Route::post('/payment/test-callback', [\App\Http\Controllers\Api\PaymentController::class, 'testPaymentCallback']);
         Route::get('/applications/{application}/payments', [\App\Http\Controllers\Api\PaymentController::class, 'history']);
         Route::post('/payment/upload-proof', [\App\Http\Controllers\Api\PaymentController::class, 'uploadProof']);
 

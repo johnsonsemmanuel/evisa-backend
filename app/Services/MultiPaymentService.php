@@ -25,85 +25,24 @@ class MultiPaymentService
     {
         $methods = [
             [
-                'id' => 'gcb_card',
+                'id' => 'gcb',
                 'provider' => 'gcb',
-                'name' => 'GCB Card Payment',
-                'description' => 'Pay with Visa, Mastercard via GCB Gateway',
-                'icon' => 'credit-card',
-                'currencies' => ['GHS'],
-                'countries' => ['GH'],
-            ],
-            [
-                'id' => 'gcb_momo',
-                'provider' => 'gcb',
-                'name' => 'GCB Mobile Money',
-                'description' => 'MTN, Vodafone, AirtelTigo via GCB',
-                'icon' => 'smartphone',
-                'currencies' => ['GHS'],
-                'countries' => ['GH'],
-            ],
-            [
-                'id' => 'gcb_mtn',
-                'provider' => 'gcb',
-                'name' => 'MTN Mobile Money',
-                'description' => 'Pay with MTN MoMo',
-                'icon' => 'smartphone',
-                'currencies' => ['GHS'],
-                'countries' => ['GH'],
-            ],
-            [
-                'id' => 'gcb_vodafone',
-                'provider' => 'gcb',
-                'name' => 'Vodafone Cash',
-                'description' => 'Pay with Vodafone Cash',
-                'icon' => 'smartphone',
-                'currencies' => ['GHS'],
-                'countries' => ['GH'],
-            ],
-            [
-                'id' => 'gcb_airteltigo',
-                'provider' => 'gcb',
-                'name' => 'AirtelTigo Money',
-                'description' => 'Pay with AirtelTigo Money',
-                'icon' => 'smartphone',
-                'currencies' => ['GHS'],
-                'countries' => ['GH'],
-            ],
-            [
-                'id' => 'gcb_account',
-                'provider' => 'gcb',
-                'name' => 'GCB Account',
-                'description' => 'Pay with your GCB Bank Account',
+                'name' => 'GCB Payment Gateway',
+                'description' => 'Pay with cards, mobile money, or bank account via GCB',
                 'icon' => 'building',
                 'currencies' => ['GHS'],
                 'countries' => ['GH'],
+                'badge' => 'Local',
             ],
             [
-                'id' => 'paystack_card',
+                'id' => 'paystack',
                 'provider' => 'paystack',
-                'name' => 'Paystack Card Payment',
-                'description' => 'Pay with Visa, Mastercard, or Verve',
+                'name' => 'Paystack',
+                'description' => 'Pay with cards, mobile money, or bank transfer',
                 'icon' => 'credit-card',
-                'currencies' => ['GHS', 'NGN', 'USD'],
+                'currencies' => ['GHS', 'USD'],
                 'countries' => ['GH', 'NG', 'ZA', 'KE'],
-            ],
-            [
-                'id' => 'paystack_mobile_money',
-                'provider' => 'paystack',
-                'name' => 'Paystack Mobile Money',
-                'description' => 'Pay with MTN MoMo, Vodafone Cash, AirtelTigo Money',
-                'icon' => 'smartphone',
-                'currencies' => ['GHS'],
-                'countries' => ['GH'],
-            ],
-            [
-                'id' => 'stripe_card',
-                'provider' => 'stripe',
-                'name' => 'International Card',
-                'description' => 'Pay with international Visa, Mastercard, Amex',
-                'icon' => 'globe',
-                'currencies' => ['USD', 'EUR', 'GBP'],
-                'countries' => ['*'],
+                'badge' => 'Popular',
             ],
             [
                 'id' => 'bank_transfer',
@@ -113,6 +52,7 @@ class MultiPaymentService
                 'icon' => 'building',
                 'currencies' => ['GHS', 'USD'],
                 'countries' => ['*'],
+                'badge' => null,
             ],
         ];
 
@@ -124,6 +64,8 @@ class MultiPaymentService
 
     /**
      * Initialize payment with selected method.
+     * Note: Test API keys still redirect to real payment gateway checkout pages.
+     * Test mode only affects verification (simulating successful payments for testing).
      */
     public function initializePayment(
         Application $application,
@@ -134,17 +76,73 @@ class MultiPaymentService
         $amount = $this->calculateAmount($application, $currency);
 
         return match ($paymentMethod) {
-            'gcb_card' => $this->initializeGcb($application, $amount, $currency, 'card', $callbackUrl),
-            'gcb_momo' => $this->initializeGcb($application, $amount, $currency, 'momo', $callbackUrl),
-            'gcb_mtn' => $this->initializeGcb($application, $amount, $currency, 'mtn', $callbackUrl),
-            'gcb_vodafone' => $this->initializeGcb($application, $amount, $currency, 'vodafone', $callbackUrl),
-            'gcb_airteltigo' => $this->initializeGcb($application, $amount, $currency, 'airteltigo', $callbackUrl),
-            'gcb_account' => $this->initializeGcb($application, $amount, $currency, 'gcb', $callbackUrl),
-            'paystack_card', 'paystack_mobile_money' => $this->initializePaystack($application, $amount, $currency, $paymentMethod, $callbackUrl),
-            'stripe_card' => $this->initializeStripe($application, $amount, $currency, $callbackUrl),
+            'gcb' => $this->initializeGcb($application, $amount, $currency, null, $callbackUrl),
+            'paystack' => $this->initializePaystack($application, $amount, $currency, 'paystack_card', $callbackUrl),
             'bank_transfer' => $this->initializeBankTransfer($application, $amount, $currency),
             default => ['success' => false, 'message' => 'Invalid payment method'],
         };
+    }
+
+    /**
+     * Check if we're in test mode based on API keys.
+     */
+    protected function isTestMode(): bool
+    {
+        $paystackKey = config('services.paystack.secret_key', '');
+        $stripeKey = config('services.stripe.secret_key', '');
+        $gcbUrl = config('services.gcb.base_url', '');
+
+        return str_contains($paystackKey, 'test') || 
+               str_contains($stripeKey, 'test') || 
+               str_contains($gcbUrl, 'uat') ||
+               str_contains($gcbUrl, 'test');
+    }
+
+    /**
+     * Initialize test payment (mock for development).
+     */
+    protected function initializeTestPayment(
+        Application $application,
+        string $paymentMethod,
+        float $amount,
+        string $currency,
+        ?string $callbackUrl
+    ): array {
+        $reference = $this->generateReference($application, 'TEST');
+
+        // Create payment record
+        $payment = $this->createPaymentRecord(
+            $application,
+            $reference,
+            $paymentMethod, // Use the method directly (gcb, paystack, bank_transfer)
+            $amount,
+            $currency,
+            $paymentMethod
+        );
+
+        // For bank transfer, return instructions
+        if ($paymentMethod === 'bank_transfer') {
+            return $this->initializeBankTransfer($application, $amount, $currency);
+        }
+
+        // For other methods, return a test checkout URL
+        $testUrl = config('app.frontend_url') . '/test-payment?' . http_build_query([
+            'reference' => $reference,
+            'amount' => $amount,
+            'currency' => $currency,
+            'method' => $paymentMethod,
+            'callback' => $callbackUrl,
+        ]);
+
+        return [
+            'success' => true,
+            'provider' => explode('_', $paymentMethod)[0],
+            'checkout_url' => $testUrl,
+            'authorization_url' => $testUrl, // Some frontend code expects this key
+            'reference' => $reference,
+            'test_mode' => true,
+            'message' => 'Test mode: This is a simulated payment for development purposes',
+        ];
     }
 
     /**
@@ -154,7 +152,7 @@ class MultiPaymentService
         Application $application,
         float $amount,
         string $currency,
-        string $paymentOption,
+        ?string $paymentOption,
         ?string $callbackUrl
     ): array {
         $reference = $this->generateReference($application, 'GCB');
@@ -164,7 +162,7 @@ class MultiPaymentService
             $amount,
             $currency,
             $callbackUrl,
-            $paymentOption
+            $paymentOption // null means all payment options available
         );
 
         if ($result['success']) {
@@ -174,7 +172,7 @@ class MultiPaymentService
                 'gcb',
                 $amount,
                 $currency,
-                "gcb_{$paymentOption}"
+                'gcb'
             );
 
             // Store GCB checkout ID in metadata
@@ -208,7 +206,7 @@ class MultiPaymentService
         ?string $callbackUrl
     ): array {
         $reference = $this->generateReference($application, 'PS');
-        $channels = $method === 'paystack_mobile_money' ? ['mobile_money'] : ['card', 'bank'];
+        $channels = ['card', 'bank', 'mobile_money']; // All channels available
 
         $result = $this->paystackService->initializeTransaction(
             $application,
@@ -219,7 +217,10 @@ class MultiPaymentService
         );
 
         if ($result['success']) {
-            $this->createPaymentRecord($application, $reference, 'paystack', $amount, $currency, $method);
+            $payment = $this->createPaymentRecord($application, $reference, 'paystack', $amount, $currency, 'paystack');
+            
+            // Store Paystack's reference in provider_reference for verification
+            $payment->update(['provider_reference' => $result['reference']]);
 
             return [
                 'success' => true,
@@ -335,6 +336,11 @@ class MultiPaymentService
             return ['success' => true, 'status' => 'completed', 'payment' => $payment];
         }
 
+        // Check if this is a test payment
+        if (str_starts_with($reference, 'TEST-')) {
+            return $this->verifyTestPayment($reference, $payment);
+        }
+
         // Verify with provider
         return match ($payment->payment_provider) {
             'gcb' => $this->verifyGcb($reference, $payment),
@@ -343,6 +349,16 @@ class MultiPaymentService
             'bank_transfer' => ['success' => true, 'status' => $payment->status, 'payment' => $payment],
             default => ['success' => false, 'status' => 'unknown_provider'],
         };
+    }
+
+    /**
+     * Verify test payment (for development).
+     */
+    protected function verifyTestPayment(string $reference, Payment $payment): array
+    {
+        // In test mode, we simulate payment completion
+        // This would normally be handled by the test payment page callback
+        return ['success' => true, 'status' => $payment->status, 'payment' => $payment];
     }
 
     /**
@@ -447,10 +463,9 @@ class MultiPaymentService
 
     /**
      * Handle successful payment.
-     * Transitions: submitted_awaiting_payment/pending_payment → paid_submitted
-     * Routing is NOT triggered here — it is handled separately.
+     * Transitions: draft → submitted_awaiting_payment → paid_submitted → submitted (with routing)
      */
-    protected function onPaymentSuccess(Payment $payment): void
+    public function onPaymentSuccess(Payment $payment): void
     {
         $application = $payment->application;
         if (!$application) return;
@@ -458,9 +473,18 @@ class MultiPaymentService
         // Store total fee
         $application->update(['total_fee' => $payment->amount]);
 
-        // Use centralized ApplicationService for proper status transition + audit trail
+        $applicationService = app(ApplicationService::class);
+
+        // Handle draft applications - submit for payment first
+        if ($application->status === 'draft') {
+            $applicationService->submitForPayment($application);
+            $application = $application->fresh();
+        }
+
+        // Confirm payment and submit for routing
         if (in_array($application->status, ['submitted_awaiting_payment', 'pending_payment'])) {
-            app(ApplicationService::class)->confirmPayment($application);
+            $applicationService->confirmPayment($application);
+            $applicationService->submit($application->fresh());
         }
 
         Log::info("Payment completed for application {$application->reference_number}");
@@ -477,6 +501,11 @@ class MultiPaymentService
         string $currency,
         string $method
     ): Payment {
+        // Ensure application exists and has an ID
+        if (!$application->exists || !$application->id) {
+            throw new \InvalidArgumentException('Cannot create payment for non-existent application');
+        }
+
         return Payment::create([
             'application_id' => $application->id,
             'user_id' => $application->user_id,

@@ -216,6 +216,30 @@ class ApplicationController extends Controller
     }
 
     /**
+     * Submit application without payment (Pay Later).
+     */
+    public function submitWithoutPayment(Request $request, Application $application): JsonResponse
+    {
+        $this->authorizeApplicant($request, $application);
+
+        if (!in_array($application->status, ['draft', 'pending_payment'])) {
+            return response()->json(['message' => 'Application cannot be submitted without payment at this stage'], 422);
+        }
+
+        // Transition to pending_payment status
+        $this->applicationService->changeStatus(
+            $application,
+            'pending_payment',
+            'Application submitted - payment pending'
+        );
+
+        return response()->json([
+            'message' => 'Application submitted successfully. Please complete payment to begin processing.',
+            'application' => $application->fresh()->load('visaType'),
+        ]);
+    }
+
+    /**
      * Initiate payment for an application.
      */
     public function initiatePayment(Request $request, Application $application): JsonResponse

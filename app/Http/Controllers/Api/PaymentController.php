@@ -37,6 +37,15 @@ class PaymentController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
+        // Verify application exists and is in a payable state
+        if (!$application->exists) {
+            return response()->json(['message' => 'Application not found'], 404);
+        }
+
+        if (!in_array($application->status, ['draft', 'pending_payment', 'submitted_awaiting_payment'])) {
+            return response()->json(['message' => 'Application is not in a payable state'], 422);
+        }
+
         $validated = $request->validate([
             'payment_method' => 'required|string',
             'currency' => 'nullable|string|in:GHS,USD,EUR,GBP',
@@ -176,8 +185,45 @@ class PaymentController extends Controller
     }
 
     /**
-     * Get payment statistics (admin).
+     * Handle test payment callback (for development).
      */
+    public function testPaymentCallback(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'reference' => 'required|string',
+            'status' => 'required|string|in:success,failed',
+        ]);
+
+        $payment = Payment::where('transaction_reference', $validated['reference'])->first();
+
+        if (!$payment) {
+            return response()->json(['message' => 'Payment not found'], 404);
+        }
+
+        if ($validated['status'] === 'success') {
+            $payment->update([
+                'status' => 'completed',
+                'paid_at' => now(),
+                'provider_reference' => 'TEST-' . now()->timestamp,
+            ]);
+
+            $this->paymentService->onPaymentSuccess($payment);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Test payment completed successfully',
+                'payment' => $payment->fresh(),
+            ]);
+        } else {
+            $payment->update(['status' => 'failed']);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Test payment failed',
+                'payment' => $payment->fresh(),
+            ]);
+        }
+    }
     public function statistics(Request $request): JsonResponse
     {
         $days = $request->query('days', 30);

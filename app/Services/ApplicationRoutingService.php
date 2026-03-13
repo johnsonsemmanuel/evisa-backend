@@ -40,6 +40,11 @@ class ApplicationRoutingService
             $application->processing_tier = 'standard';
             $application->sla_deadline = $this->slaService->calculateDeadline(120);
         }
+        
+        // Override processing_tier from service_tier if available (user-selected tier takes precedence)
+        if ($application->serviceTier) {
+            $application->processing_tier = $application->serviceTier->code;
+        }
 
         // Determine agency based on visa_channel + processing_tier (spec rules)
         $application->assigned_agency = $this->determineAgency($application);
@@ -110,11 +115,13 @@ class ApplicationRoutingService
     protected function determineAgency(Application $application): string
     {
         $channel = $application->visa_channel ?? 'e-visa';
-        $tier = $application->processing_tier ?? 'standard';
-
-        // Also resolve tier from service_tier relation if processing_tier not set
-        if (!$application->processing_tier && $application->serviceTier) {
+        
+        // Determine tier from service_tier relation first, then fallback to processing_tier
+        $tier = 'standard';
+        if ($application->serviceTier) {
             $tier = $application->serviceTier->code ?? 'standard';
+        } elseif ($application->processing_tier) {
+            $tier = $application->processing_tier;
         }
 
         // Rule 1: Regular visa → always MFA
