@@ -53,7 +53,7 @@ RUN apk add --no-cache --virtual .build-deps $PHPIZE_DEPS \
 
 # Clean build deps and keep only runtime libs for gd/zip/icu
 RUN apk del libpng-dev libjpeg-turbo-dev libwebp-dev freetype-dev libzip-dev icu-dev linux-headers $PHPIZE_DEPS 2>/dev/null || true \
-    && apk add --no-cache libpng libjpeg-turbo libwebp libzip libicu libfreetype \
+    && apk add --no-cache libpng libjpeg-turbo libwebp libzip icu-libs freetype \
     && rm -rf /var/cache/apk/* /tmp/pear
 
 # Timezone
