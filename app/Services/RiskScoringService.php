@@ -13,6 +13,11 @@ class RiskScoringService
      */
     public function calculateRiskScore(Application $application): array
     {
+        // FIX: Eager load documents to prevent N+1
+        if (!$application->relationLoaded('documents')) {
+            $application->load('documents:id,application_id,document_type,verification_status');
+        }
+
         $score = 0;
         $reasons = [];
 
@@ -250,12 +255,12 @@ class RiskScoringService
     {
         $riskData = $this->calculateRiskScore($application);
         
-        $application->update([
+        $application->forceFill([
             'risk_score' => $riskData['risk_score'],
             'risk_level' => $riskData['risk_level'],
             'risk_reasons' => $riskData['risk_reasons'],
             'risk_last_updated' => $riskData['risk_last_updated'],
-        ]);
+        ])->save();
     }
 
     // Helper methods for risk assessment
@@ -517,7 +522,8 @@ class RiskScoringService
     protected function getMissingRequiredDocuments(Application $application): array
     {
         $required = ['passport_copy', 'photo'];
-        $uploaded = $application->documents()->pluck('document_type')->toArray();
+        // FIX: Use loaded relationship instead of query
+        $uploaded = $application->documents->pluck('document_type')->toArray();
         
         return array_diff($required, $uploaded);
     }

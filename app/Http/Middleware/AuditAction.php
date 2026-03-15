@@ -17,6 +17,7 @@ class AuditAction
         $response = $next($request);
 
         if ($request->user() && in_array($request->method(), ['POST', 'PUT', 'PATCH', 'DELETE'])) {
+            $now = now();
             AuditLog::create([
                 'user_id'        => $request->user()->id,
                 'action'         => 'api.' . strtolower($request->method()) . '.' . $request->path(),
@@ -26,6 +27,8 @@ class AuditAction
                 'new_values'     => $this->sanitiseInput($request->all()),
                 'ip_address'     => $request->ip(),
                 'user_agent'     => $request->userAgent(),
+                'created_at'     => $now,
+                'updated_at'     => $now,
             ]);
         }
 

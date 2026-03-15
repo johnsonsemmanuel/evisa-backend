@@ -7,6 +7,11 @@ use App\Http\Controllers\Api\AeropassController;
 use App\Http\Controllers\Api\Applicant\ApplicationController;
 use App\Http\Controllers\Api\Applicant\DocumentController;
 use App\Http\Controllers\Api\GIS\CaseController;
+use App\Http\Controllers\Api\GIS\CaseQueueController;
+use App\Http\Controllers\Api\GIS\CaseUtilityController;
+use App\Http\Controllers\Api\GIS\CaseReviewController;
+use App\Http\Controllers\Api\GIS\CaseDecisionController;
+use App\Http\Controllers\Api\GIS\CaseBatchController;
 use App\Http\Controllers\Api\MFA\EscalationController;
 use App\Http\Controllers\Api\Admin\UserController;
 use App\Http\Controllers\Api\Admin\TierConfigController;
@@ -29,16 +34,44 @@ Route::get('/health', function () {
 */
 Route::prefix('auth')->middleware('auth.errors')->group(function () {
     // Rate limit login attempts: More generous limits to prevent false positives
-    Route::post('/login', [AuthController::class, 'login'])->middleware('robust.throttle:10,1');
+    Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login');
     Route::post('/register', [AuthController::class, 'register'])->middleware('robust.throttle:5,1');
     Route::post('/forgot-password', [PasswordResetController::class, 'sendResetLink'])->middleware('robust.throttle:5,1');
     Route::post('/reset-password', [PasswordResetController::class, 'reset'])->middleware('robust.throttle:10,1');
-    });
+    
+    // 2FA verification (no auth required - uses two_factor_token)
+    Route::post('/2fa/verify', [\App\Http\Controllers\Api\Auth\TwoFactorAuthController::class, 'verify'])
+        ->middleware('robust.throttle:5,1');
+});
 
-// Payment webhooks (no auth — verified via provider signature)
-Route::post('/webhooks/payment', [WebhookController::class, 'handlePayment'])->middleware('throttle:60,1');
-Route::post('/webhooks/gcb', [WebhookController::class, 'handleGcbCallback'])->middleware('throttle:60,1');
-Route::post('/webhooks/paystack', [WebhookController::class, 'handlePaystackWebhook'])->middleware('throttle:60,1');
+/*
+|--------------------------------------------------------------------------
+| Payment Webhooks (External Provider Callbacks)
+|--------------------------------------------------------------------------
+|
+| These routes handle payment gateway callbacks/webhooks.
+| SECURITY:
+| - No auth middleware (verified via provider signature)
+| - Excluded from CSRF protection (external POST requests)
+| - Higher rate limit for legitimate webhook traffic
+| - Signature verification enforced in controller
+|
+*/
+Route::prefix('webhooks')->group(function () {
+    Route::post('/payment', [WebhookController::class, 'handlePayment'])
+        ->middleware('throttle:300,1');
+
+    Route::post('/gcb', [WebhookController::class, 'handleGcbCallback'])
+        ->middleware('throttle:300,1');
+
+    Route::post('/paystack', [WebhookController::class, 'handlePaystackWebhook'])
+        ->middleware('throttle:300,1');
+});
+
+// GCB callback (primary route — no auth, signature verified in controller)
+Route::post('/gcb/callback', [\App\Http\Controllers\Api\GCBCallbackController::class, '__invoke'])
+    ->name('gcb.callback')
+    ->middleware('throttle:300,1');
 
 /*
 |--------------------------------------------------------------------------
@@ -46,9 +79,14 @@ Route::post('/webhooks/paystack', [WebhookController::class, 'handlePaystackWebh
 |--------------------------------------------------------------------------
 */
 
-// Interpol nominal verification callback from Aeropass
-Route::post('/aeropass/interpol-nominal-verification/callback', [\App\Http\Controllers\Api\AeropassController::class, 'interpolCallback'])
-    ->middleware('throttle:100,1'); // Higher limit for external system
+// Interpol nominal verification callback from Aeropass (legacy sync flow)
+Route::post('/aeropass/interpol-nominal-verification/callback', [AeropassController::class, 'interpolCallback'])
+    ->middleware('throttle:100,1');
+
+// Async nominal check result callback (Aeropass POSTs here; no auth — verify HMAC in controller)
+Route::post('/aeropass/callback', [\App\Http\Controllers\Api\AeropassCallbackController::class, '__invoke'])
+    ->name('aeropass.callback')
+    ->middleware('throttle:300,1');
 
 // E-Visa check endpoint for Aeropass
 Route::post('/aeropass/visa-check', [\App\Http\Controllers\Api\AeropassController::class, 'visaCheck'])
@@ -117,9 +155,9 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->prefix('sumsub')->group(fu
         ->middleware(\App\Http\Middleware\EnsureRole::class . ':admin,gis_admin,mfa_reviewer');
 });
 
-// Sumsub webhook (no auth - verified via signature)
-Route::post('/sumsub/webhook', [\App\Http\Controllers\Api\SumsubController::class, 'handleWebhook'])
-    ->middleware('throttle:100,1');
+// Sumsub webhook (no auth, no CSRF — verified via X-App-Token + HMAC in controller)
+Route::post('/sumsub/webhook', [\App\Http\Controllers\Api\SumsubWebhookController::class, '__invoke'])
+    ->middleware('throttle:300,1');
 
 // Authenticated Border Control routes (Week 2: Border Verification System)
 Route::middleware(['auth:sanctum', 'throttle:60,1'])->prefix('border')->group(function () {
@@ -163,11 +201,26 @@ Route::prefix('airline')->middleware('throttle:100,1')->group(function () {
 */
 Route::middleware(['auth:sanctum', 'api.error', \App\Http\Middleware\SetLocale::class, \App\Http\Middleware\AuditAction::class, 'throttle:60,1'])->group(function () {
 
+    // ── Broadcasting auth (Pusher private/presence channel auth)
+    Route::post('/broadcasting/auth', function (\Illuminate\Http\Request $request) {
+        return \Illuminate\Support\Facades\Broadcast::auth($request);
+    })->name('broadcasting.auth');
+
     // ── Auth & Profile ──────────────────────────────────────────────
     Route::put('/auth/profile', [AuthController::class, 'updateProfile']);
     Route::put('/auth/password', [AuthController::class, 'changePassword']);
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/auth/me', [AuthController::class, 'me']);
+
+    // ── Two-Factor Authentication ───────────────────────────────────
+    Route::prefix('auth/2fa')->group(function () {
+        Route::post('/setup', [\App\Http\Controllers\Api\Auth\TwoFactorAuthController::class, 'setup']);
+        Route::post('/confirm', [\App\Http\Controllers\Api\Auth\TwoFactorAuthController::class, 'confirm']);
+        Route::get('/status', [\App\Http\Controllers\Api\Auth\TwoFactorAuthController::class, 'status']);
+        Route::get('/recovery-codes', [\App\Http\Controllers\Api\Auth\TwoFactorAuthController::class, 'getRecoveryCodes']);
+        Route::post('/recovery-codes/regenerate', [\App\Http\Controllers\Api\Auth\TwoFactorAuthController::class, 'regenerateRecoveryCodes']);
+        Route::post('/disable', [\App\Http\Controllers\Api\Auth\TwoFactorAuthController::class, 'disable']);
+    });
 
     /*
     |----------------------------------------------------------------------
@@ -189,22 +242,50 @@ Route::middleware(['auth:sanctum', 'api.error', \App\Http\Middleware\SetLocale::
         Route::get('/applications/{application}/status', [ApplicationController::class, 'status']);
         Route::get('/applications/{application}/evisa', [ApplicationController::class, 'downloadEvisa']);
 
-        // Documents
+        // Documents - SECURE FILE UPLOAD & SERVING
         Route::post('/applications/{application}/documents', [DocumentController::class, 'upload']);
         Route::post('/documents/{document}/reupload', [DocumentController::class, 'reupload']);
         Route::get('/applications/{application}/documents/check', [DocumentController::class, 'checkCompleteness']);
         Route::get('/applications/{application}/documents', [ApplicationController::class, 'documents']);
+        
+        // Secure document serving via signed URLs
+        Route::get('/documents/{document}/download-url', [DocumentController::class, 'getDownloadUrl'])
+            ->name('documents.download-url');
+        Route::get('/documents/{document}/serve', [DocumentController::class, 'serve'])
+            ->name('documents.serve');
+        
+        // Legacy download route (deprecated - use signed URLs)
         Route::get('/applications/{application}/documents/{document}/download', [ApplicationController::class, 'downloadDocument']);
         Route::delete('/applications/{application}/documents/{document}', [ApplicationController::class, 'deleteDocument']);
 
-        // Payments
-        Route::get('/payment-methods', [\App\Http\Controllers\Api\PaymentController::class, 'methods']);
-        Route::post('/applications/{application}/payment/initialize', [\App\Http\Controllers\Api\PaymentController::class, 'initialize']);
-        Route::post('/payment/verify', [\App\Http\Controllers\Api\Applicant\PaymentController::class, 'verify']);
-        Route::post('/payment/simulate', [\App\Http\Controllers\Api\Applicant\PaymentController::class, 'simulatePayment']);
-        Route::post('/payment/test-callback', [\App\Http\Controllers\Api\PaymentController::class, 'testPaymentCallback']);
-        Route::get('/applications/{application}/payments', [\App\Http\Controllers\Api\PaymentController::class, 'history']);
-        Route::post('/payment/upload-proof', [\App\Http\Controllers\Api\PaymentController::class, 'uploadProof']);
+        // Payments - HARDENED SECURITY
+        Route::prefix('payments')->middleware(['payment.rate.limit'])->group(function () {
+            // Payment methods (low risk, standard throttling)
+            Route::get('/methods', [\App\Http\Controllers\Api\PaymentController::class, 'methods'])
+                ->middleware('throttle:60,1');
+            
+            // Payment initiation (high risk, strict throttling)
+            Route::post('/applications/{application}/initialize', [\App\Http\Controllers\Api\PaymentController::class, 'initialize'])
+                ->middleware('throttle:5,1');
+            
+            // Payment verification (medium risk)
+            Route::post('/verify', [\App\Http\Controllers\Api\Applicant\PaymentController::class, 'verify'])
+                ->middleware('throttle:30,1');
+            
+            // Payment status checks (medium risk)
+            Route::get('/applications/{application}/history', [\App\Http\Controllers\Api\PaymentController::class, 'history'])
+                ->middleware('throttle:30,1');
+            
+            // Payment proof upload (medium risk)
+            Route::post('/upload-proof', [\App\Http\Controllers\Api\PaymentController::class, 'uploadProof'])
+                ->middleware('throttle:10,1');
+            
+            // Test endpoints (development only, strict throttling)
+            Route::post('/simulate', [\App\Http\Controllers\Api\Applicant\PaymentController::class, 'simulatePayment'])
+                ->middleware('throttle:5,1');
+            Route::post('/test-callback', [\App\Http\Controllers\Api\PaymentController::class, 'testPaymentCallback'])
+                ->middleware('throttle:5,1');
+        });
 
         // OCR - Extract passport data
         Route::post('/ocr/extract-passport', [\App\Http\Controllers\Api\Applicant\OcrController::class, 'extractPassportData']);
@@ -237,30 +318,35 @@ Route::middleware(['auth:sanctum', 'api.error', \App\Http\Middleware\SetLocale::
     */
     Route::middleware([\App\Http\Middleware\EnsureRole::class . ':gis_officer,gis_admin,admin'])->prefix('gis')->group(function () {
 
-        Route::get('/metrics', [CaseController::class, 'metrics']);
-        Route::get('/reason-codes', [CaseController::class, 'reasonCodes']);
-        Route::get('/cases', [CaseController::class, 'index']);
-        Route::get('/cases/{application}', [CaseController::class, 'show']);
-        Route::post('/cases/{application}/assign', [CaseController::class, 'assignToSelf']);
-        Route::post('/cases/{application}/escalate', [CaseController::class, 'escalate']);
-        Route::post('/cases/{application}/notes', [CaseController::class, 'addNote']);
-        Route::post('/cases/{application}/request-info', [CaseController::class, 'requestInfo']);
-        Route::post('/cases/{application}/documents/{document}/verify', [CaseController::class, 'verifyDocument']);
-        Route::get('/cases/{application}/documents/{document}/download', [CaseController::class, 'downloadDocument']);
+        // Queue management
+        Route::get('/metrics', [CaseQueueController::class, 'metrics']);
+        Route::get('/cases', [CaseQueueController::class, 'index']);
+        Route::get('/cases/{application}', [CaseQueueController::class, 'show']);
+        Route::post('/cases/{application}/assign', [CaseQueueController::class, 'assignToSelf']);
+        Route::get('/batch/stats', [CaseQueueController::class, 'batchStats']);
 
-        // Two-step approval: reviewer submits for approval, then approver approves
-        Route::post('/cases/{application}/submit-for-approval', [CaseController::class, 'submitForApproval']);
-        Route::post('/cases/{application}/approve', [CaseController::class, 'approve']);
-        Route::post('/cases/{application}/deny', [CaseController::class, 'deny']);
-        Route::post('/cases/{application}/issue', [CaseController::class, 'issueVisa']);
-        Route::post('/cases/{application}/revert', [CaseController::class, 'revertDecision']);
+        // Utilities
+        Route::get('/reason-codes', [CaseUtilityController::class, 'reasonCodes']);
+        Route::get('/cases/{application}/documents/{document}/download', [CaseUtilityController::class, 'downloadDocument']);
+
+        // Review actions
+        Route::post('/cases/{application}/escalate', [CaseReviewController::class, 'escalate']);
+        Route::post('/cases/{application}/notes', [CaseReviewController::class, 'addNote']);
+        Route::post('/cases/{application}/request-info', [CaseReviewController::class, 'requestInfo']);
+        Route::post('/cases/{application}/documents/{document}/verify', [CaseReviewController::class, 'verifyDocument']);
+
+        // Decision making (two-step approval workflow)
+        Route::post('/cases/{application}/submit-for-approval', [CaseDecisionController::class, 'submitForApproval']);
+        Route::post('/cases/{application}/approve', [CaseDecisionController::class, 'approve']);
+        Route::post('/cases/{application}/deny', [CaseDecisionController::class, 'deny']);
+        Route::post('/cases/{application}/issue', [CaseDecisionController::class, 'issueVisa']);
+        Route::post('/cases/{application}/revert', [CaseDecisionController::class, 'revertDecision']);
 
         // Batch operations
-        Route::get('/batch/stats', [CaseController::class, 'batchStats']);
-        Route::post('/batch/assign', [CaseController::class, 'batchAssign']);
-        Route::post('/batch/status', [CaseController::class, 'batchUpdateStatus']);
-        Route::post('/batch/approve', [CaseController::class, 'batchApprove']);
-        Route::post('/batch/request-info', [CaseController::class, 'batchRequestInfo']);
+        Route::post('/batch/assign', [CaseBatchController::class, 'batchAssign']);
+        Route::post('/batch/status', [CaseBatchController::class, 'batchUpdateStatus']);
+        Route::post('/batch/approve', [CaseBatchController::class, 'batchApprove']);
+        Route::post('/batch/request-info', [CaseBatchController::class, 'batchRequestInfo']);
 
         // Support Tickets for Officers
         Route::get('/support/tickets', [\App\Http\Controllers\Api\SupportController::class, 'index']);
@@ -310,6 +396,8 @@ Route::middleware(['auth:sanctum', 'api.error', \App\Http\Middleware\SetLocale::
         Route::put('/users/{user}', [UserController::class, 'update']);
         Route::post('/users/{user}/deactivate', [UserController::class, 'deactivate']);
         Route::post('/users/{user}/activate', [UserController::class, 'activate']);
+        Route::post('/users/{user}/unlock-account', [UserController::class, 'unlockAccount'])
+            ->middleware(\App\Http\Middleware\EnsureRole::class . ':admin,super_admin');
 
         // Applications & Payments
         Route::get('/applications', [ReportController::class, 'applications']);
@@ -362,10 +450,68 @@ Route::middleware(['auth:sanctum', 'api.error', \App\Http\Middleware\SetLocale::
         Route::get('/analytics/dashboard', [\App\Http\Controllers\Api\Admin\AnalyticsController::class, 'dashboard']);
         Route::get('/analytics/officers', [\App\Http\Controllers\Api\Admin\AnalyticsController::class, 'officerPerformance']);
         Route::get('/analytics/export', [\App\Http\Controllers\Api\Admin\AnalyticsController::class, 'exportCsv']);
+        
+        // Financial Analytics
+        Route::get('/analytics/revenue', [\App\Http\Controllers\Api\Admin\AnalyticsController::class, 'getRevenue']);
+        Route::get('/analytics/revenue/by-visa-type', [\App\Http\Controllers\Api\Admin\AnalyticsController::class, 'getRevenueByVisaType']);
+        Route::get('/analytics/revenue/by-country', [\App\Http\Controllers\Api\Admin\AnalyticsController::class, 'getRevenueByCountry']);
+        Route::get('/analytics/revenue/by-tier', [\App\Http\Controllers\Api\Admin\AnalyticsController::class, 'getRevenueByTier']);
+        Route::get('/analytics/revenue/trends', [\App\Http\Controllers\Api\Admin\AnalyticsController::class, 'getRevenueTrends']);
+        
+        // Visitor Analytics
+        Route::get('/analytics/visitors/by-country', [\App\Http\Controllers\Api\Admin\AnalyticsController::class, 'getVisitorsByCountry']);
+        Route::get('/analytics/visitors/approval-rates', [\App\Http\Controllers\Api\Admin\AnalyticsController::class, 'getApprovalRates']);
+        Route::get('/analytics/visitors/trends', [\App\Http\Controllers\Api\Admin\AnalyticsController::class, 'getVisitorTrends']);
+        Route::get('/analytics/visitors/demographics', [\App\Http\Controllers\Api\Admin\AnalyticsController::class, 'getDemographics']);
+        
+        // Export
+        Route::post('/analytics/export/excel', [\App\Http\Controllers\Api\Admin\ExportController::class, 'exportExcel']);
+        Route::post('/analytics/export/csv', [\App\Http\Controllers\Api\Admin\ExportController::class, 'exportCsv']);
+        
+        // AI Assistant
+        Route::post('/ai-assistant/query', [\App\Http\Controllers\Api\Admin\AIAssistantController::class, 'query']);
+        Route::post('/ai-assistant/clear-context', [\App\Http\Controllers\Api\Admin\AIAssistantController::class, 'clearContext']);
+        Route::get('/ai-assistant/suggestions', [\App\Http\Controllers\Api\Admin\AIAssistantController::class, 'getSuggestions']);
+        Route::post('/analytics/export/csv', [\App\Http\Controllers\Api\Admin\ExportController::class, 'exportCsv']);
+        
+        // AI Assistant
+        Route::post('/ai-assistant/query', [\App\Http\Controllers\Api\Admin\AIAssistantController::class, 'query']);
+        Route::post('/ai-assistant/clear-context', [\App\Http\Controllers\Api\Admin\AIAssistantController::class, 'clearContext']);
+        Route::get('/ai-assistant/suggestions', [\App\Http\Controllers\Api\Admin\AIAssistantController::class, 'getSuggestions']);
 
-        // Payment Management
-        Route::get('/payments/statistics', [\App\Http\Controllers\Api\PaymentController::class, 'statistics']);
-        Route::post('/payments/confirm-bank-transfer', [\App\Http\Controllers\Api\PaymentController::class, 'confirmBankTransfer']);
+        // Payment Management - HARDENED SECURITY
+        Route::prefix('payments')->middleware(['payment.rate.limit'])->group(function () {
+            // Payment statistics (admin only, standard throttling)
+            Route::get('/statistics', [\App\Http\Controllers\Api\PaymentController::class, 'statistics'])
+                ->middleware('throttle:60,1');
+            
+            // Bank transfer confirmation (admin only, medium throttling)
+            Route::post('/confirm-bank-transfer', [\App\Http\Controllers\Api\PaymentController::class, 'confirmBankTransfer'])
+                ->middleware('throttle:30,1');
+        });
+
+        // Refund Management - HARDENED SECURITY (finance_officer and admin only)
+        Route::prefix('refunds')->middleware(['role:finance_officer,admin', 'payment.rate.limit'])->group(function () {
+            // Refund listing (standard throttling)
+            Route::get('/', [\App\Http\Controllers\Api\RefundController::class, 'index'])
+                ->middleware('throttle:60,1');
+            
+            // Refund initiation (strict throttling - 10 per hour)
+            Route::post('/', [\App\Http\Controllers\Api\RefundController::class, 'initiate'])
+                ->middleware('throttle:10,60');
+            
+            // Refund details (standard throttling)
+            Route::get('/{refundRequest}', [\App\Http\Controllers\Api\RefundController::class, 'show'])
+                ->middleware('throttle:60,1');
+            
+            // Refund approval (medium throttling)
+            Route::post('/{refundRequest}/approve', [\App\Http\Controllers\Api\RefundController::class, 'approve'])
+                ->middleware('throttle:30,1');
+            
+            // Refund rejection (medium throttling)
+            Route::post('/{refundRequest}/reject', [\App\Http\Controllers\Api\RefundController::class, 'reject'])
+                ->middleware('throttle:30,1');
+        });
 
         // Routing Management
         Route::get('/routing/applications/{application}', [\App\Http\Controllers\Api\Admin\RoutingController::class, 'getRouting']);

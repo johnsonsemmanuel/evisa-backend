@@ -18,7 +18,7 @@ class VisaTypeFactory extends Factory
             'base_fee' => 260.00,
             'max_duration_days' => $this->faker->numberBetween(30, 90),
             'is_active' => true,
-            'required_documents' => ['passport_bio', 'photo'],
+            // required_documents dropped in 2026_03_15_999999; use visa_type_required_documents pivot if needed
         ];
     }
 }

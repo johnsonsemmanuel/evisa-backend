@@ -71,7 +71,7 @@ class EtaApplication extends Model
             'denied_entry_before' => 'boolean',
             'criminal_conviction' => 'boolean',
             'previous_ghana_visa' => 'boolean',
-            'fee_amount' => 'decimal:2',
+            'fee_amount' => 'integer',  // pesewas (BIGINT)
             'approved_at' => 'datetime',
             'expires_at' => 'datetime',
             'valid_from' => 'datetime',
@@ -80,6 +80,10 @@ class EtaApplication extends Model
             'validity_days' => 'integer',
             'screening_notes' => 'array',
             'passport_verification_data' => 'array',
+            'status' => \App\Enums\EtaStatus::class,
+            'entry_type' => \App\Enums\EntryType::class,
+            'sumsub_review_result' => \App\Enums\SumsubReviewResult::class,
+            'sumsub_verification_status' => \App\Enums\SumsubVerificationStatus::class,
         ];
     }
 
@@ -99,12 +103,12 @@ class EtaApplication extends Model
 
     public function scopePending($query)
     {
-        return $query->where('status', 'pending');
+        return $query->where('status', \App\Enums\EtaStatus::Pending->value);
     }
 
     public function scopeApproved($query)
     {
-        return $query->where('status', 'approved');
+        return $query->where('status', \App\Enums\EtaStatus::Approved->value);
     }
 
     /**
@@ -112,32 +116,50 @@ class EtaApplication extends Model
      */
     public function isApproved(): bool
     {
-        return in_array($this->status, ['approved', 'issued']);
+        return in_array($this->status, [
+            \App\Enums\EtaStatus::Approved,
+            \App\Enums\EtaStatus::Issued
+        ]);
     }
 
     public function scopeIssued($query)
     {
-        return $query->where('status', 'issued');
+        return $query->where('status', \App\Enums\EtaStatus::Issued->value);
     }
 
     public function scopeFlagged($query)
     {
-        return $query->where('status', 'flagged');
+        return $query->where('status', \App\Enums\EtaStatus::Flagged->value);
+    }
+
+    /**
+     * Scope: Filter active (issued/approved) ETAs that haven't expired
+     */
+    public function scopeActiveAuthorizations($query)
+    {
+        return $query->whereIn('status', [
+                    \App\Enums\EtaStatus::Issued->value,
+                    \App\Enums\EtaStatus::Approved->value
+                ])
+                     ->where(function($q) {
+                         $q->where('expires_at', '>', now())
+                           ->orWhereNull('expires_at');
+                     });
     }
 
     public function isIssued(): bool
     {
-        return $this->status === 'issued';
+        return $this->status === \App\Enums\EtaStatus::Issued;
     }
 
     public function isFlagged(): bool
     {
-        return $this->status === 'flagged';
+        return $this->status === \App\Enums\EtaStatus::Flagged;
     }
 
     public function isUsed(): bool
     {
-        return $this->status === 'used';
+        return $this->status === \App\Enums\EtaStatus::Used;
     }
 
 

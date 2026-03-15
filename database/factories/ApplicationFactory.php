@@ -87,4 +87,65 @@ class ApplicationFactory extends Factory
             'decided_at' => now()->subHours(24),
         ]);
     }
+
+    /**
+     * Assign application to a specific agency
+     */
+    public function forAgency(string $agency): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'assigned_agency' => $agency,
+        ]);
+    }
+
+    /**
+     * Assign application to a specific MFA mission
+     */
+    public function forMission(int $missionId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'owner_mission_id' => $missionId,
+            'assigned_agency' => 'mfa',
+        ]);
+    }
+
+    /**
+     * Create application submitted to GIS
+     */
+    public function submittedToGis(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'status' => 'submitted',
+            'assigned_agency' => 'gis',
+            'current_queue' => 'review_queue',
+            'submitted_at' => now()->subHours(1),
+            'sla_deadline' => now()->addHours(71),
+        ]);
+    }
+
+    /**
+     * Create application submitted to MFA
+     */
+    public function submittedToMfa(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'status' => 'submitted',
+            'assigned_agency' => 'mfa',
+            'current_queue' => 'review_queue',
+            'submitted_at' => now()->subHours(1),
+            'sla_deadline' => now()->addHours(71),
+        ]);
+    }
+
+    /**
+     * Application with Aeropass transaction reference (e.g. after nominal check submitted)
+     */
+    public function withAeropassRef(?string $ref = null): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'aeropass_transaction_ref' => $ref ?? 'EVISA-' . ($attributes['id'] ?? $this->faker->numberBetween(1, 99999)) . '-' . time(),
+            'aeropass_status' => 'checking',
+            'aeropass_submitted_at' => now(),
+        ]);
+    }
 }

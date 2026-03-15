@@ -16,7 +16,7 @@ return [
     |
     */
 
-    'default' => env('DB_CONNECTION', 'sqlite'),
+    'default' => env('DB_CONNECTION', 'mysql'),
 
     /*
     |--------------------------------------------------------------------------
@@ -58,9 +58,84 @@ return [
             'prefix_indexes' => true,
             'strict' => true,
             'engine' => null,
+            'options' => extension_loaded('pdo_mysql') ? array_filter(array_merge(
+                [
+                    \PDO::ATTR_EMULATE_PREPARES => false,
+                    \PDO::ATTR_STRINGIFY_FETCHES => false,
+                    \PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES 'utf8mb4' COLLATE 'utf8mb4_unicode_ci', time_zone='+00:00'",
+                ],
+                [
+                    (PHP_VERSION_ID >= 80500 ? \Pdo\Mysql::ATTR_SSL_CA : \PDO::MYSQL_ATTR_SSL_CA) => env('MYSQL_ATTR_SSL_CA'),
+                ]
+            )) : [],
+            // Connection pooling: with PHP-FPM, each worker keeps its own connection.
+            // Total pool size ≈ pm.max_children × number of workers using this connection.
+        ],
+
+        // Read replica (optional). Route read queries: DB::connection('mysql_read')->select(...)
+        'mysql_read' => [
+            'driver' => 'mysql',
+            'url' => env('DB_READ_URL'),
+            'host' => env('DB_READ_HOST', env('DB_HOST', '127.0.0.1')),
+            'port' => env('DB_READ_PORT', env('DB_PORT', '3306')),
+            'database' => env('DB_DATABASE', 'laravel'),
+            'username' => env('DB_READ_USERNAME', env('DB_USERNAME', 'root')),
+            'password' => env('DB_READ_PASSWORD', env('DB_PASSWORD', '')),
+            'unix_socket' => env('DB_SOCKET', ''),
+            'charset' => env('DB_CHARSET', 'utf8mb4'),
+            'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'strict' => true,
+            'engine' => null,
+            'options' => extension_loaded('pdo_mysql') ? array_filter(array_merge(
+                [
+                    \PDO::ATTR_EMULATE_PREPARES => false,
+                    \PDO::ATTR_STRINGIFY_FETCHES => false,
+                    \PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES 'utf8mb4' COLLATE 'utf8mb4_unicode_ci', time_zone='+00:00'",
+                ],
+                [
+                    (PHP_VERSION_ID >= 80500 ? \Pdo\Mysql::ATTR_SSL_CA : \PDO::MYSQL_ATTR_SSL_CA) => env('MYSQL_ATTR_SSL_CA'),
+                ]
+            )) : [],
+        ],
+
+        // Audit database connection with restricted user (INSERT + SELECT only)
+        // ISO 27001 A.8.15 compliance - immutable audit logs
+        'audit' => [
+            'driver' => 'mysql',
+            'url' => env('DB_URL'),
+            'host' => env('DB_HOST', '127.0.0.1'),
+            'port' => env('DB_PORT', '3306'),
+            'database' => env('DB_DATABASE', 'laravel'),
+            'username' => env('DB_AUDIT_USER', env('DB_USERNAME', 'root')),
+            'password' => env('DB_AUDIT_PASSWORD', env('DB_PASSWORD', '')),
+            'unix_socket' => env('DB_SOCKET', ''),
+            'charset' => env('DB_CHARSET', 'utf8mb4'),
+            'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'strict' => true,
+            'engine' => null,
             'options' => extension_loaded('pdo_mysql') ? array_filter([
                 (PHP_VERSION_ID >= 80500 ? \Pdo\Mysql::ATTR_SSL_CA : \PDO::MYSQL_ATTR_SSL_CA) => env('MYSQL_ATTR_SSL_CA'),
             ]) : [],
+        ],
+
+        // Isolated DB for weekly backup restore test (must exist and be empty/dedicated)
+        'mysql_restore_test' => [
+            'driver' => 'mysql',
+            'host' => env('DB_TEST_HOST', env('DB_HOST', '127.0.0.1')),
+            'port' => env('DB_TEST_PORT', env('DB_PORT', '3306')),
+            'database' => env('DB_TEST_DATABASE', 'evisa_restore_test'),
+            'username' => env('DB_TEST_USERNAME', env('DB_USERNAME', 'root')),
+            'password' => env('DB_TEST_PASSWORD', env('DB_PASSWORD', '')),
+            'unix_socket' => env('DB_SOCKET', ''),
+            'charset' => env('DB_CHARSET', 'utf8mb4'),
+            'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
+            'prefix' => '',
+            'strict' => true,
+            'engine' => null,
         ],
 
         'mariadb' => [
@@ -166,12 +241,25 @@ return [
         ],
 
         'cache' => [
-            'url' => env('REDIS_URL'),
-            'host' => env('REDIS_HOST', '127.0.0.1'),
+            'url' => env('REDIS_CACHE_URL'),
+            'host' => env('REDIS_CACHE_HOST', env('REDIS_HOST', '127.0.0.1')),
             'username' => env('REDIS_USERNAME'),
             'password' => env('REDIS_PASSWORD'),
-            'port' => env('REDIS_PORT', '6379'),
+            'port' => env('REDIS_CACHE_PORT', env('REDIS_PORT', '6379')),
             'database' => env('REDIS_CACHE_DB', '1'),
+            'max_retries' => env('REDIS_MAX_RETRIES', 3),
+            'backoff_algorithm' => env('REDIS_BACKOFF_ALGORITHM', 'decorrelated_jitter'),
+            'backoff_base' => env('REDIS_BACKOFF_BASE', 100),
+            'backoff_cap' => env('REDIS_BACKOFF_CAP', 1000),
+        ],
+
+        'sessions' => [
+            'url' => env('REDIS_SESSIONS_URL'),
+            'host' => env('REDIS_SESSIONS_HOST', env('REDIS_HOST', '127.0.0.1')),
+            'username' => env('REDIS_USERNAME'),
+            'password' => env('REDIS_PASSWORD'),
+            'port' => env('REDIS_SESSIONS_PORT', env('REDIS_PORT', '6379')),
+            'database' => env('REDIS_SESSIONS_DB', '2'),
             'max_retries' => env('REDIS_MAX_RETRIES', 3),
             'backoff_algorithm' => env('REDIS_BACKOFF_ALGORITHM', 'decorrelated_jitter'),
             'backoff_base' => env('REDIS_BACKOFF_BASE', 100),

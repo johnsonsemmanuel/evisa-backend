@@ -6,6 +6,7 @@ use App\Models\Application;
 use App\Models\Payment;
 use App\Services\ApplicationService;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -66,6 +67,8 @@ class MultiPaymentService
      * Initialize payment with selected method.
      * Note: Test API keys still redirect to real payment gateway checkout pages.
      * Test mode only affects verification (simulating successful payments for testing).
+     * 
+     * SECURITY: Always recalculates and validates price server-side.
      */
     public function initializePayment(
         Application $application,
@@ -73,6 +76,28 @@ class MultiPaymentService
         string $currency = 'GHS',
         ?string $callbackUrl = null
     ): array {
+        // SECURITY: Validate callback URL is from trusted domain
+        if ($callbackUrl) {
+            $this->validateCallbackUrl($callbackUrl);
+        }
+        
+        // CRITICAL: Recalculate price server-side to prevent manipulation
+        $pricingService = app(\App\Services\PricingService::class);
+        $pricingService->calculateAndUpdateApplicationFee($application);
+        $application = $application->fresh();
+        
+        // Validate that the stored fee (pesewas) matches our calculation
+        if (!$pricingService->validatePrice($application, (int) $application->total_fee)) {
+            Log::warning('Price validation failed during payment initialization', [
+                'application_id' => $application->id,
+                'stored_fee' => $application->total_fee,
+            ]);
+            
+            // Recalculate one more time to ensure accuracy
+            $pricingService->calculateAndUpdateApplicationFee($application);
+            $application = $application->fresh();
+        }
+
         $amount = $this->calculateAmount($application, $currency);
 
         return match ($paymentMethod) {
@@ -81,6 +106,70 @@ class MultiPaymentService
             'bank_transfer' => $this->initializeBankTransfer($application, $amount, $currency),
             default => ['success' => false, 'message' => 'Invalid payment method'],
         };
+    }
+
+    /**
+     * Validate callback URL is from trusted domain.
+     * SECURITY: Prevents open redirect vulnerabilities.
+     */
+    protected function validateCallbackUrl(string $callbackUrl): void
+    {
+        // Use the ExternalUrlValidator for consistent SSRF protection
+        try {
+            app(\App\Services\ExternalUrlValidator::class)->validateWebhookUrl($callbackUrl);
+        } catch (\App\Exceptions\UnauthorizedExternalRequestException $e) {
+            // For callback URLs, we're more lenient - allow frontend domains
+            $parsed = parse_url($callbackUrl);
+            
+            if (!$parsed || !isset($parsed['host'])) {
+                throw new \InvalidArgumentException('Invalid callback URL format');
+            }
+            
+            $frontendUrl = config('app.frontend_url');
+            $allowedHost = parse_url($frontendUrl, PHP_URL_HOST);
+            
+            // Allow localhost and the configured frontend domain
+            $allowedHosts = [
+                $allowedHost,
+                'localhost',
+                '127.0.0.1',
+            ];
+            
+            // In production, also allow Vercel preview deployments
+            if (app()->environment('production')) {
+                $allowedHosts[] = '*.vercel.app';
+            }
+            
+            $requestHost = $parsed['host'];
+            
+            // Check exact match or wildcard match
+            $isAllowed = false;
+            foreach ($allowedHosts as $allowed) {
+                if ($allowed === $requestHost) {
+                    $isAllowed = true;
+                    break;
+                }
+                
+                // Handle wildcard domains (e.g., *.vercel.app)
+                if (str_starts_with($allowed, '*.')) {
+                    $domain = substr($allowed, 2);
+                    if (str_ends_with($requestHost, $domain)) {
+                        $isAllowed = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (!$isAllowed) {
+                Log::warning('Invalid callback URL domain', [
+                    'callback_url' => $callbackUrl,
+                    'host' => $requestHost,
+                    'allowed_hosts' => $allowedHosts,
+                ]);
+                
+                throw new \InvalidArgumentException('Callback URL must be from trusted domain');
+            }
+        }
     }
 
     /**
@@ -104,31 +193,28 @@ class MultiPaymentService
     protected function initializeTestPayment(
         Application $application,
         string $paymentMethod,
-        float $amount,
+        int $amountPesewas,
         string $currency,
         ?string $callbackUrl
     ): array {
         $reference = $this->generateReference($application, 'TEST');
 
-        // Create payment record
         $payment = $this->createPaymentRecord(
             $application,
             $reference,
-            $paymentMethod, // Use the method directly (gcb, paystack, bank_transfer)
-            $amount,
+            $paymentMethod,
+            $amountPesewas,
             $currency,
             $paymentMethod
         );
 
-        // For bank transfer, return instructions
         if ($paymentMethod === 'bank_transfer') {
-            return $this->initializeBankTransfer($application, $amount, $currency);
+            return $this->initializeBankTransfer($application, $amountPesewas, $currency);
         }
 
-        // For other methods, return a test checkout URL
         $testUrl = config('app.frontend_url') . '/test-payment?' . http_build_query([
             'reference' => $reference,
-            'amount' => $amount,
+            'amount' => $amountPesewas / 100,
             'currency' => $currency,
             'method' => $paymentMethod,
             'callback' => $callbackUrl,
@@ -150,7 +236,7 @@ class MultiPaymentService
      */
     protected function initializeGcb(
         Application $application,
-        float $amount,
+        int $amountPesewas,
         string $currency,
         ?string $paymentOption,
         ?string $callbackUrl
@@ -159,10 +245,10 @@ class MultiPaymentService
 
         $result = $this->gcbService->initializeCheckout(
             $application,
-            $amount,
+            $amountPesewas / 100.0,
             $currency,
             $callbackUrl,
-            $paymentOption // null means all payment options available
+            $paymentOption
         );
 
         if ($result['success']) {
@@ -170,7 +256,7 @@ class MultiPaymentService
                 $application,
                 $reference,
                 'gcb',
-                $amount,
+                $amountPesewas,
                 $currency,
                 'gcb'
             );
@@ -200,24 +286,24 @@ class MultiPaymentService
      */
     protected function initializePaystack(
         Application $application,
-        float $amount,
+        int $amountPesewas,
         string $currency,
         string $method,
         ?string $callbackUrl
     ): array {
         $reference = $this->generateReference($application, 'PS');
-        $channels = ['card', 'bank', 'mobile_money']; // All channels available
+        $channels = ['card', 'bank', 'mobile_money'];
 
         $result = $this->paystackService->initializeTransaction(
             $application,
-            $amount,
+            $amountPesewas,
             $currency,
             $channels,
             $callbackUrl
         );
 
         if ($result['success']) {
-            $payment = $this->createPaymentRecord($application, $reference, 'paystack', $amount, $currency, 'paystack');
+            $payment = $this->createPaymentRecord($application, $reference, 'paystack', $amountPesewas, $currency, 'paystack');
             
             // Store Paystack's reference in provider_reference for verification
             $payment->update(['provider_reference' => $result['reference']]);
@@ -238,7 +324,7 @@ class MultiPaymentService
      */
     protected function initializeStripe(
         Application $application,
-        float $amount,
+        int $amountPesewas,
         string $currency,
         ?string $callbackUrl
     ): array {
@@ -252,7 +338,7 @@ class MultiPaymentService
                 'payment_method_types[]' => 'card',
                 'line_items[0][price_data][currency]' => strtolower($currency),
                 'line_items[0][price_data][product_data][name]' => 'Ghana eVisa - ' . $application->visaType?->name,
-                'line_items[0][price_data][unit_amount]' => (int) ($amount * 100),
+                'line_items[0][price_data][unit_amount]' => $amountPesewas,
                 'line_items[0][quantity]' => 1,
                 'mode' => 'payment',
                 'success_url' => ($callbackUrl ?? config('app.frontend_url') . '/payment/callback') . '?session_id={CHECKOUT_SESSION_ID}',
@@ -265,7 +351,7 @@ class MultiPaymentService
             if ($response->successful()) {
                 $data = $response->json();
 
-                $this->createPaymentRecord($application, $reference, 'stripe', $amount, $currency, 'stripe_card');
+                $this->createPaymentRecord($application, $reference, 'stripe', $amountPesewas, $currency, 'stripe_card');
 
                 return [
                     'success' => true,
@@ -288,27 +374,26 @@ class MultiPaymentService
      */
     protected function initializeBankTransfer(
         Application $application,
-        float $amount,
+        int $amountPesewas,
         string $currency
     ): array {
         $reference = $this->generateReference($application, 'BT');
 
-        $this->createPaymentRecord($application, $reference, 'bank_transfer', $amount, $currency, 'bank_transfer');
+        $this->createPaymentRecord($application, $reference, 'bank_transfer', $amountPesewas, $currency, 'bank_transfer');
 
-        // Bank details for manual transfer
         $bankDetails = [
-            'bank_name' => 'Ghana Commercial Bank',
-            'account_name' => 'Ghana Immigration Service - eVisa',
-            'account_number' => '1234567890123',
-            'branch' => 'Accra Main Branch',
-            'swift_code' => 'GHCBGHAC',
+            'bank_name' => config('services.gcb.bank_name'),
+            'account_name' => config('services.gcb.account_name'),
+            'account_number' => config('services.gcb.bank_account_number'),
+            'branch' => config('services.gcb.branch'),
+            'swift_code' => config('services.gcb.swift_code'),
         ];
 
         return [
             'success' => true,
             'provider' => 'bank_transfer',
             'reference' => $reference,
-            'amount' => $amount,
+            'amount' => $amountPesewas / 100,
             'currency' => $currency,
             'bank_details' => $bankDetails,
             'instructions' => [
@@ -332,8 +417,8 @@ class MultiPaymentService
             return ['success' => false, 'status' => 'not_found'];
         }
 
-        if ($payment->status === 'completed') {
-            return ['success' => true, 'status' => 'completed', 'payment' => $payment];
+        if ($payment->status === 'paid') {
+            return ['success' => true, 'status' => 'paid', 'payment' => $payment];
         }
 
         // Check if this is a test payment
@@ -379,14 +464,14 @@ class MultiPaymentService
 
             if ($statusCode === '00') {
                 $payment->update([
-                    'status' => 'completed',
+                    'status' => 'paid',
                     'paid_at' => $result['time_completed'] ? \Carbon\Carbon::parse($result['time_completed']) : now(),
                     'provider_reference' => $result['bank_ref'],
                 ]);
 
                 $this->onPaymentSuccess($payment);
 
-                return ['success' => true, 'status' => 'completed', 'payment' => $payment->fresh()];
+                return ['success' => true, 'status' => 'paid', 'payment' => $payment->fresh()];
             }
 
             return ['success' => true, 'status' => $payment->status, 'gcb_status' => $statusCode];
@@ -404,7 +489,7 @@ class MultiPaymentService
 
         if ($result['success'] && $result['status'] === 'success') {
             $payment->update([
-                'status' => 'completed',
+                'status' => 'paid',
                 'paid_at' => $result['paid_at'] ? \Carbon\Carbon::parse($result['paid_at']) : now(),
                 'provider_reference' => $result['reference'],
                 'provider_response' => $result['raw_data'] ?? null,
@@ -412,7 +497,7 @@ class MultiPaymentService
 
             $this->onPaymentSuccess($payment);
 
-            return ['success' => true, 'status' => 'completed', 'payment' => $payment->fresh()];
+            return ['success' => true, 'status' => 'paid', 'payment' => $payment->fresh()];
         }
 
         return ['success' => false, 'status' => $payment->status, 'message' => $result['message'] ?? 'Verification failed'];
@@ -446,17 +531,19 @@ class MultiPaymentService
             return ['success' => false, 'message' => 'Payment not found'];
         }
 
-        $payment->update([
-            'status' => 'completed',
-            'paid_at' => now(),
-            'metadata' => array_merge($payment->metadata ?? [], [
-                'proof_url' => $proofUrl,
-                'confirmed_by' => $confirmedBy,
-                'confirmed_at' => now()->toIso8601String(),
-            ]),
-        ]);
+        DB::transaction(function () use ($payment, $proofUrl, $confirmedBy) {
+            $payment->update([
+                'status' => 'paid',
+                'paid_at' => now(),
+                'metadata' => array_merge($payment->metadata ?? [], [
+                    'proof_url' => $proofUrl,
+                    'confirmed_by' => $confirmedBy,
+                    'confirmed_at' => now()->toIso8601String(),
+                ]),
+            ]);
 
-        $this->onPaymentSuccess($payment);
+            $this->onPaymentSuccess($payment);
+        });
 
         return ['success' => true, 'payment' => $payment->fresh()];
     }
@@ -467,37 +554,37 @@ class MultiPaymentService
      */
     public function onPaymentSuccess(Payment $payment): void
     {
-        $application = $payment->application;
-        if (!$application) return;
+        DB::transaction(function () use ($payment) {
+            $application = $payment->application;
+            if (!$application) return;
 
-        // Store total fee
-        $application->update(['total_fee' => $payment->amount]);
+            $application->update(['total_fee' => $payment->amount]);
 
-        $applicationService = app(ApplicationService::class);
+            $applicationService = app(ApplicationService::class);
 
-        // Handle draft applications - submit for payment first
-        if ($application->status === 'draft') {
-            $applicationService->submitForPayment($application);
-            $application = $application->fresh();
-        }
+            if ($application->status === 'draft') {
+                $applicationService->submitForPayment($application);
+                $application = $application->fresh();
+            }
 
-        // Confirm payment and submit for routing
-        if (in_array($application->status, ['submitted_awaiting_payment', 'pending_payment'])) {
-            $applicationService->confirmPayment($application);
-            $applicationService->submit($application->fresh());
-        }
+            if (in_array($application->status, ['submitted_awaiting_payment', 'pending_payment'])) {
+                $applicationService->confirmPayment($application);
+                $applicationService->submit($application->fresh());
+            }
 
-        Log::info("Payment completed for application {$application->reference_number}");
+            Log::info("Payment completed for application {$application->reference_number}");
+        });
     }
 
     /**
      * Create payment record.
+     * SECURITY: Validates reference uniqueness before creation.
      */
     protected function createPaymentRecord(
         Application $application,
         string $reference,
         string $provider,
-        float $amount,
+        int $amountPesewas,
         string $currency,
         string $method
     ): Payment {
@@ -506,12 +593,30 @@ class MultiPaymentService
             throw new \InvalidArgumentException('Cannot create payment for non-existent application');
         }
 
+        // CRITICAL: Check for duplicate reference before creation
+        $existing = Payment::where('transaction_reference', $reference)->first();
+        if ($existing) {
+            Log::warning('Duplicate payment reference detected', [
+                'reference' => $reference,
+                'existing_payment_id' => $existing->id,
+                'application_id' => $application->id,
+            ]);
+            
+            // If the existing payment is for the same application and still pending, return it
+            if ($existing->application_id === $application->id && $existing->status === 'pending') {
+                return $existing;
+            }
+            
+            // Otherwise, generate a new reference
+            $reference = $this->generateReference($application, explode('-', $reference)[0]);
+        }
+
         return Payment::create([
             'application_id' => $application->id,
             'user_id' => $application->user_id,
             'transaction_reference' => $reference,
             'payment_provider' => $provider,
-            'amount' => $amount,
+            'amount' => $amountPesewas,
             'currency' => $currency,
             'status' => 'pending',
             'metadata' => ['payment_method' => $method],
@@ -519,20 +624,19 @@ class MultiPaymentService
     }
 
     /**
-     * Calculate amount in specified currency using unified PricingService.
+     * Calculate amount in minor units (pesewas/cents) for the given currency.
+     * Uses application total_fee (stored in USD pesewas) and converts by rate.
      */
-    protected function calculateAmount(Application $application, string $currency): float
+    protected function calculateAmount(Application $application, string $currency): int
     {
         $pricingService = app(\App\Services\PricingService::class);
         $pricing = $pricingService->calculatePrice($application);
-        
-        $amountUsd = $pricing['total'];
+        $amountUsdPesewas = (int) $pricing['total_pesewas'];
 
-        // Convert if needed (simplified - use real exchange rates in production)
         $rates = ['USD' => 1, 'GHS' => 12.5, 'EUR' => 0.92, 'GBP' => 0.79];
         $rate = $rates[$currency] ?? 1;
 
-        return round($amountUsd * $rate, 2);
+        return (int) round($amountUsdPesewas * $rate);
     }
 
     /**
@@ -541,5 +645,48 @@ class MultiPaymentService
     protected function generateReference(Application $application, string $prefix): string
     {
         return $prefix . '-' . $application->reference_number . '-' . Str::random(6);
+    }
+
+    /**
+     * Handle webhook callback from payment provider.
+     * Verifies signature and updates payment + application status.
+     * 
+     * Migrated from legacy PaymentService for backward compatibility.
+     */
+    public function handleWebhook(array $payload, string $provider): bool
+    {
+        $providerRef = $payload['provider_reference'] ?? null;
+        $txnRef = $payload['transaction_reference'] ?? null;
+        $status = $payload['status'] ?? null;
+
+        if (!$txnRef || !$status) {
+            return false;
+        }
+
+        $payment = Payment::where('transaction_reference', $txnRef)->first();
+
+        if (!$payment) {
+            return false;
+        }
+
+        $payment->provider_reference = $providerRef;
+        $payment->provider_response = $payload;
+
+        if ($status === 'success' || $status === 'paid') {
+            $payment->status = 'paid';
+            $payment->paid_at = now();
+            $payment->save();
+
+            $this->onPaymentSuccess($payment);
+            return true;
+        }
+
+        if ($status === 'failed') {
+            $payment->status = 'failed';
+            $payment->save();
+            return true;
+        }
+
+        return false;
     }
 }

@@ -26,7 +26,7 @@ class ServiceTier extends Model
         return [
             'processing_hours' => 'integer',
             'fee_multiplier' => 'decimal:2',
-            'additional_fee' => 'decimal:2',
+            'additional_fee' => 'integer',  // pesewas (BIGINT)
             'is_active' => 'boolean',
             'sort_order' => 'integer',
         ];
@@ -43,10 +43,13 @@ class ServiceTier extends Model
     }
 
     /**
-     * Calculate the total fee for this service tier
+     * Calculate the total fee in pesewas for this service tier.
+     *
+     * @param int $baseFeePesewas Base fee in pesewas (minor units)
+     * @return int Total fee in pesewas
      */
-    public function calculateFee(float $baseFee): float
+    public function calculateFee(int $baseFeePesewas): int
     {
-        return ($baseFee * $this->fee_multiplier) + $this->additional_fee;
+        return (int) round($baseFeePesewas * (float) $this->fee_multiplier) + (int) $this->additional_fee;
     }
 }

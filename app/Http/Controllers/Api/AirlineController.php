@@ -199,25 +199,25 @@ class AirlineController extends Controller
      */
     protected function findMatchingEvisa(array $passenger): array
     {
-        $applications = Application::where('status', 'approved')
+        // FIX: Use database query with passport number instead of loading all applications
+        $application = Application::where('status', 'approved')
             ->whereNotNull('decided_at')
-            ->get();
+            ->where('passport_number', strtoupper($passenger['passport_number']))
+            ->first();
 
-        foreach ($applications as $app) {
-            // Match passport number
-            if (strtoupper($app->passport_number) !== strtoupper($passenger['passport_number'])) {
-                continue;
-            }
+        if (!$application) {
+            return ['found' => false];
+        }
 
-            // Check if visa is still valid
-            $expiryDate = $app->decided_at->addDays($app->visaType?->max_duration_days ?? 90);
-            if ($expiryDate < now()) {
-                return [
-                    'found' => true,
-                    'valid' => false,
-                    'expired' => true,
-                    'application' => $app,
-                    'expiry_date' => $expiryDate,
+        // Check if visa is still valid
+        $expiryDate = $application->decided_at->addDays($application->visaType?->max_duration_days ?? 90);
+        if ($expiryDate < now()) {
+            return [
+                'found' => true,
+                'valid' => false,
+                'expired' => true,
+                'application' => $application,
+                'expiry_date' => $expiryDate,
                 ];
             }
 
@@ -237,26 +237,38 @@ class AirlineController extends Controller
      */
     protected function findMatchingEta(array $passenger): array
     {
-        $etas = EtaApplication::where('status', 'approved')
+        // FIX: Use blind index for encrypted passport number search
+        $passportHash = hash_hmac('sha256', strtoupper($passenger['passport_number']), config('app.blind_index_key'));
+        
+        $eta = EtaApplication::where('status', 'approved')
             ->whereNotNull('approved_at')
-            ->get();
+            ->where('passport_number_blind_index', $passportHash)
+            ->first();
 
-        foreach ($etas as $eta) {
+        if (!$eta) {
+            return ['found' => false];
+        }
+
+        // Verify the actual passport number (decrypt and compare)
+        try {
             $storedPassport = Crypt::decryptString($eta->passport_number_encrypted);
             if (strtoupper($storedPassport) !== strtoupper($passenger['passport_number'])) {
-                continue;
+                return ['found' => false];
             }
+        } catch (\Exception $e) {
+            return ['found' => false];
+        }
 
-            // Check if ETA is still valid
-            if ($eta->expires_at && $eta->expires_at < now()) {
-                return [
-                    'found' => true,
-                    'valid' => false,
-                    'expired' => true,
-                    'eta' => $eta,
-                    'expiry_date' => $eta->expires_at,
-                ];
-            }
+        // Check if ETA is still valid
+        if ($eta->expires_at && $eta->expires_at < now()) {
+            return [
+                'found' => true,
+                'valid' => false,
+                'expired' => true,
+                'eta' => $eta,
+                'expiry_date' => $eta->expires_at,
+            ];
+        }
 
             return [
                 'found' => true,

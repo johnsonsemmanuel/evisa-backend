@@ -32,6 +32,8 @@ class BorderCrossing extends Model
     protected $casts = [
         'metadata' => 'array',
         'crossed_at' => 'datetime',
+        'crossing_type' => \App\Enums\BorderCrossingType::class,
+        'verification_status' => \App\Enums\BorderVerificationStatus::class,
     ];
 
     protected $hidden = [
@@ -77,12 +79,12 @@ class BorderCrossing extends Model
 
     public function scopeEntries($query)
     {
-        return $query->where('crossing_type', 'entry');
+        return $query->where('crossing_type', \App\Enums\BorderCrossingType::Entry->value);
     }
 
     public function scopeExits($query)
     {
-        return $query->where('crossing_type', 'exit');
+        return $query->where('crossing_type', \App\Enums\BorderCrossingType::Exit->value);
     }
 
     public function scopeAtPort($query, string $port)

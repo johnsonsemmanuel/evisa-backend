@@ -14,10 +14,10 @@ class TwoStageWorkflowService
      */
     public function moveToReviewQueue(Application $application): void
     {
-        $application->update([
+        $application->forceFill([
             'current_queue' => 'REVIEW_QUEUE',
             'status' => 'IN_REVIEW',
-        ]);
+        ])->save();
 
         Log::info('Application moved to review queue', [
             'application_id' => $application->id,
@@ -34,10 +34,10 @@ class TwoStageWorkflowService
             throw new \Exception('Officer cannot review this application');
         }
 
-        $application->update([
+        $application->forceFill([
             'reviewing_officer_id' => $officer->id,
             'review_started_at' => now(),
-        ]);
+        ])->save();
 
         $this->addInternalNote($application, $officer, 'Application assigned for review');
 
@@ -57,11 +57,11 @@ class TwoStageWorkflowService
             throw new \Exception('Only the assigned reviewing officer can complete this review');
         }
 
-        $application->update([
+        $application->forceFill([
             'current_queue' => 'APPROVAL_QUEUE',
             'status' => 'PENDING_APPROVAL',
             'review_completed_at' => now(),
-        ]);
+        ])->save();
 
         if ($notes) {
             $this->addInternalNote($application, $reviewingOfficer, $notes, 'review_completion');
@@ -82,10 +82,10 @@ class TwoStageWorkflowService
             throw new \Exception('Officer cannot approve this application');
         }
 
-        $application->update([
+        $application->forceFill([
             'approval_officer_id' => $officer->id,
             'approval_started_at' => now(),
-        ]);
+        ])->save();
 
         $this->addInternalNote($application, $officer, 'Application assigned for approval');
 
@@ -131,21 +131,24 @@ class TwoStageWorkflowService
             }
         }
 
-        $updateData = [
-            'status' => $decision,
+        $statusMap = ['APPROVED' => 'approved', 'DENIED' => 'denied'];
+        $newStatus = $statusMap[$decision];
+
+        $application->forceFill([
             'approval_completed_at' => now(),
             'decided_at' => now(),
             'decision_notes' => $notes,
-        ];
+        ])->save();
 
-        // Add denial reason codes if denying
         if ($decision === 'DENIED' && !empty($denialReasonCodes)) {
-            $updateData['denial_reason_codes'] = $denialReasonCodes;
+            $application->forceFill([
+                'denial_reason_codes' => $denialReasonCodes,
+            ])->save();
         }
 
-        $application->update($updateData);
+        $appService = app(\App\Services\ApplicationService::class);
+        $appService->changeStatus($application, $newStatus, $notes ?? "Application {$decision}");
 
-        // Build note content
         $noteContent = "Application {$decision}";
         if ($decision === 'DENIED' && !empty($denialReasonCodes)) {
             $reasons = \App\Models\ReasonCode::whereIn('id', $denialReasonCodes)
@@ -165,11 +168,6 @@ class TwoStageWorkflowService
             'denial_reason_codes' => $denialReasonCodes ?? [],
             'approval_officer_id' => $approvalOfficer->id,
         ]);
-
-        // If approved, trigger visa issuance
-        if ($decision === 'APPROVED') {
-            $this->triggerVisaIssuance($application);
-        }
     }
 
     /**
@@ -180,10 +178,10 @@ class TwoStageWorkflowService
         User $officer, 
         string $reason
     ): void {
-        $application->update([
+        $application->forceFill([
             'current_queue' => 'REVIEW_QUEUE',
             'status' => 'REQUEST_INFO',
-        ]);
+        ])->save();
 
         $this->addInternalNote($application, $officer, $reason, 'additional_info_request');
 
@@ -313,9 +311,9 @@ class TwoStageWorkflowService
     {
         // This would trigger the visa PDF generation and email sending
         // For now, just update status
-        $application->update([
+        $application->forceFill([
             'status' => 'ISSUED',
-        ]);
+        ])->save();
 
         Log::info('Visa issuance triggered', [
             'application_id' => $application->id,

@@ -12,6 +12,11 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // Add request context to all log entries (before other middleware)
+        $middleware->prepend(\App\Http\Middleware\InjectLogContext::class);
+
+        $middleware->append(\App\Http\Middleware\SecurityHeaders::class);
+
         $middleware->alias([
             'role'   => \App\Http\Middleware\EnsureRole::class,
             'audit'  => \App\Http\Middleware\AuditAction::class,
@@ -19,6 +24,12 @@ return Application::configure(basePath: dirname(__DIR__))
             'api.error' => \App\Http\Middleware\ApiErrorHandler::class,
             'auth.errors' => \App\Http\Middleware\HandleAuthenticationErrors::class,
             'robust.throttle' => \App\Http\Middleware\RobustRateLimiting::class,
+            'payment.rate.limit' => \App\Http\Middleware\PaymentRateLimitMiddleware::class,
+            '2fa.required' => \App\Http\Middleware\EnsureTwoFactorEnabled::class,
+            'agency.assigned' => \App\Http\Middleware\EnsureAgencyAssigned::class,
+            'email.verified' => \App\Http\Middleware\EnsureEmailVerified::class,
+            'secure.upload' => \App\Http\Middleware\SecureFileUpload::class,
+            'brute.force' => \App\Http\Middleware\BruteForceProtection::class,
         ]);
 
         // Rate limiting for API routes

@@ -59,13 +59,39 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('applications', function (Blueprint $table) {
-            $table->dropForeign(['owner_mission_id']);
-            $table->dropForeign(['reviewing_officer_id']);
-            $table->dropForeign(['approval_officer_id']);
+            // Drop foreign keys with error handling
+            try {
+                $table->dropForeign(['owner_mission_id']);
+            } catch (\Exception $e) {
+                // Foreign key doesn't exist, skip
+            }
             
-            $table->dropIndex(['assigned_agency', 'current_queue']);
-            $table->dropIndex(['owner_mission_id', 'current_queue']);
+            try {
+                $table->dropForeign(['reviewing_officer_id']);
+            } catch (\Exception $e) {
+                // Foreign key doesn't exist, skip
+            }
             
+            try {
+                $table->dropForeign(['approval_officer_id']);
+            } catch (\Exception $e) {
+                // Foreign key doesn't exist, skip
+            }
+            
+            // Drop indexes with error handling
+            try {
+                $table->dropIndex(['assigned_agency', 'current_queue']);
+            } catch (\Exception $e) {
+                // Index doesn't exist, skip
+            }
+            
+            try {
+                $table->dropIndex(['owner_mission_id', 'current_queue']);
+            } catch (\Exception $e) {
+                // Index doesn't exist, skip
+            }
+            
+            // Drop columns (these should work if they exist)
             $table->dropColumn([
                 'owner_mission_id',
                 'current_queue',

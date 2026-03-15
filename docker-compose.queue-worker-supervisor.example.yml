@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Queue worker service using Supervisor (3 queue:work + Horizon)
+# Use this instead of a single "php artisan horizon" when you want
+# dedicated processes per queue managed by Supervisor.
+# ---------------------------------------------------------------------------
+# Add to your docker-compose.prod.yml or run as override:
+#
+#  queue_worker:
+#    build:
+#      context: ./backend
+#      dockerfile: Dockerfile
+#      target: worker
+#    image: evisa-worker:production
+#    container_name: evisa-queue
+#    restart: unless-stopped
+#    env_file: ./backend/.env
+#    volumes:
+#      - storage_uploads:/var/www/html/storage/app/private
+#      - storage_logs:/var/www/html/storage/logs
+#    depends_on:
+#      backend:
+#        condition: service_healthy
+#      redis:
+#        condition: service_healthy
+#    networks:
+#      - evisa_network
+#
+# The worker image runs: ENTRYPOINT ["/docker-entrypoint-worker.sh"]
+# which executes: exec /usr/bin/supervisord -c /etc/supervisord.conf
+# Supervisor then starts: evisa-worker-critical, evisa-worker-default,
+# evisa-worker-low, and evisa-horizon (or disable horizon in supervisord.conf
+# to use only the 3 queue:work programs).
+# ---------------------------------------------------------------------------

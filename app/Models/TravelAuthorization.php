@@ -25,6 +25,7 @@ class TravelAuthorization extends Model
     protected $casts = [
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
+        'authorization_type' => \App\Enums\AuthorizationType::class,
     ];
 
     /**
@@ -106,5 +107,21 @@ class TravelAuthorization extends Model
     public function isActive(): bool
     {
         return $this->status === 'active';
+    }
+
+    /**
+     * Check if authorization is for ETA
+     */
+    public function isEta(): bool
+    {
+        return $this->authorization_type === \App\Enums\AuthorizationType::ETA;
+    }
+
+    /**
+     * Check if authorization is for VISA
+     */
+    public function isVisa(): bool
+    {
+        return $this->authorization_type === \App\Enums\AuthorizationType::VISA;
     }
 }

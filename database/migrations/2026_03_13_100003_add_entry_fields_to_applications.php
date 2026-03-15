@@ -14,13 +14,13 @@ return new class extends Migration
         Schema::table('applications', function (Blueprint $table) {
             // Check if columns don't exist before adding
             if (!Schema::hasColumn('applications', 'last_entry_date')) {
-                $table->timestamp('last_entry_date')->nullable()->after('visa_expiry');
+                $table->timestamp('last_entry_date')->nullable();
             }
             if (!Schema::hasColumn('applications', 'last_port_of_entry')) {
-                $table->string('last_port_of_entry', 100)->nullable()->after('last_entry_date');
+                $table->string('last_port_of_entry', 100)->nullable();
             }
             if (!Schema::hasColumn('applications', 'last_entry_officer_id')) {
-                $table->unsignedBigInteger('last_entry_officer_id')->nullable()->after('last_port_of_entry');
+                $table->unsignedBigInteger('last_entry_officer_id')->nullable();
                 
                 $table->index('last_entry_officer_id', 'idx_last_entry_officer');
                 

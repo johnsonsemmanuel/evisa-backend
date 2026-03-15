@@ -1,5 +1,6 @@
 <?php
 
+use Monolog\Formatter\JsonFormatter;
 use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
@@ -11,26 +12,14 @@ return [
     |--------------------------------------------------------------------------
     | Default Log Channel
     |--------------------------------------------------------------------------
-    |
-    | This option defines the default log channel that is utilized to write
-    | messages to your logs. The value provided here should match one of
-    | the channels present in the list of "channels" configured below.
-    |
     */
-
     'default' => env('LOG_CHANNEL', 'stack'),
 
     /*
     |--------------------------------------------------------------------------
     | Deprecations Log Channel
     |--------------------------------------------------------------------------
-    |
-    | This option controls the log channel that should be used to log warnings
-    | regarding deprecated PHP and library features. This allows you to get
-    | your application ready for upcoming major versions of dependencies.
-    |
     */
-
     'deprecations' => [
         'channel' => env('LOG_DEPRECATIONS_CHANNEL', 'null'),
         'trace' => env('LOG_DEPRECATIONS_TRACE', false),
@@ -40,39 +29,59 @@ return [
     |--------------------------------------------------------------------------
     | Log Channels
     |--------------------------------------------------------------------------
-    |
-    | Here you may configure the log channels for your application. Laravel
-    | utilizes the Monolog PHP logging library, which includes a variety
-    | of powerful log handlers and formatters that you're free to use.
-    |
-    | Available drivers: "single", "daily", "slack", "syslog",
-    |                    "errorlog", "monolog", "custom", "stack"
-    |
     */
-
     'channels' => [
 
+        // Main stack — all environments (use env for config cache compatibility)
         'stack' => [
             'driver' => 'stack',
-            'channels' => explode(',', (string) env('LOG_STACK', 'single')),
+            'channels' => env('APP_ENV') === 'production'
+                ? ['json_daily', 'critical_slack']
+                : explode(',', (string) env('LOG_STACK', 'single')),
             'ignore_exceptions' => false,
         ],
 
+        // JSON structured log — production standard
+        'json_daily' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/laravel.log'),
+            'level' => env('LOG_LEVEL', 'info'),
+            'days' => 30,
+            'formatter' => JsonFormatter::class,
+            'replace_placeholders' => true,
+            'tap' => [App\Logging\PIIMaskingTap::class],
+        ],
+
+        // Critical errors → Slack + email immediately
+        'critical_slack' => [
+            'driver' => 'slack',
+            'url' => env('LOG_SLACK_WEBHOOK_URL'),
+            'username' => env('LOG_SLACK_USERNAME', 'eVisa Platform Alerts'),
+            'emoji' => env('LOG_SLACK_EMOJI', ':rotating_light:'),
+            'level' => env('LOG_SLACK_LEVEL', 'error'),
+            'replace_placeholders' => true,
+        ],
+
+        // Single file — local / non-production
         'single' => [
             'driver' => 'single',
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
             'replace_placeholders' => true,
+            'tap' => [App\Logging\PIIMaskingTap::class],
         ],
 
+        // Daily (non-JSON) — optional
         'daily' => [
             'driver' => 'daily',
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
             'days' => env('LOG_DAILY_DAYS', 14),
             'replace_placeholders' => true,
+            'tap' => [App\Logging\PIIMaskingTap::class],
         ],
 
+        // Legacy slack channel name (same as critical_slack when used directly)
         'slack' => [
             'driver' => 'slack',
             'url' => env('LOG_SLACK_WEBHOOK_URL'),
@@ -80,6 +89,34 @@ return [
             'emoji' => env('LOG_SLACK_EMOJI', ':boom:'),
             'level' => env('LOG_LEVEL', 'critical'),
             'replace_placeholders' => true,
+        ],
+
+        // Payment-specific channel (separate file, longer retention)
+        'payment' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/payment.log'),
+            'level' => 'info',
+            'days' => 90,
+            'formatter' => JsonFormatter::class,
+            'replace_placeholders' => true,
+            'tap' => [App\Logging\PIIMaskingTap::class],
+        ],
+
+        // Queue/job channel
+        'queue' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/queue.log'),
+            'level' => 'warning',
+            'days' => 14,
+            'formatter' => JsonFormatter::class,
+            'replace_placeholders' => true,
+        ],
+
+        // Sentry (if DSN provided)
+        'sentry' => [
+            'driver' => 'sentry',
+            'level' => 'error',
+            'bubble' => true,
         ],
 
         'papertrail' => [
@@ -132,8 +169,9 @@ return [
             'driver' => 'daily',
             'path' => storage_path('logs/security.log'),
             'level' => 'debug',
-            'days' => 365, // Retain security logs for 1 year
+            'days' => 365,
             'replace_placeholders' => true,
+            'tap' => [App\Logging\PIIMaskingTap::class],
         ],
 
         // Authentication audit log
@@ -143,6 +181,7 @@ return [
             'level' => 'info',
             'days' => 365,
             'replace_placeholders' => true,
+            'tap' => [App\Logging\PIIMaskingTap::class],
         ],
 
         // Document access audit log
@@ -152,6 +191,7 @@ return [
             'level' => 'info',
             'days' => 365,
             'replace_placeholders' => true,
+            'tap' => [App\Logging\PIIMaskingTap::class],
         ],
 
     ],

@@ -8,7 +8,7 @@ use App\Models\VisaType;
 use App\Services\ApplicationService;
 use App\Services\EVisaPdfService;
 use App\Services\PassportVerificationService;
-use App\Services\PaymentService;
+use App\Services\MultiPaymentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -16,7 +16,7 @@ class ApplicationController extends Controller
 {
     public function __construct(
         protected ApplicationService $applicationService,
-        protected PaymentService $paymentService,
+        protected MultiPaymentService $paymentService,
     ) {}
 
     /**
@@ -26,11 +26,22 @@ class ApplicationController extends Controller
     {
         $applications = $request->user()
             ->applications()
-            ->with(['visaType', 'payment'])
+            ->with([
+                'visaType:id,name',
+                'payment:id,application_id,amount,status,paid_at',
+            ])
             ->orderBy('created_at', 'desc')
             ->paginate(15);
 
-        return response()->json($applications);
+        return response()->json([
+            'data' => \App\Http\Resources\Applicant\ApplicationListResource::collection($applications->items()),
+            'meta' => [
+                'current_page' => $applications->currentPage(),
+                'last_page' => $applications->lastPage(),
+                'per_page' => $applications->perPage(),
+                'total' => $applications->total(),
+            ],
+        ]);
     }
 
     /**
@@ -128,14 +139,27 @@ class ApplicationController extends Controller
 
     /**
      * Get a single application with full details.
+     * 
+     * SECURITY LAYERS:
+     * - LAYER 1: Route binding verifies ownership
+     * - LAYER 2: Policy authorization (this line)
+     * - LAYER 3: Global scope filters query
      */
     public function show(Request $request, Application $application): JsonResponse
     {
-        $this->authorizeApplicant($request, $application);
+        // LAYER 2: Policy-based authorization
+        $this->authorize('view', $application);
 
-        $application->load(['visaType', 'documents', 'payment', 'statusHistory']);
+        $application->load([
+            'visaType:id,name,processing_time_days',
+            'documents:id,application_id,document_type,verification_status,created_at',
+            'payment:id,application_id,amount,status,gateway,paid_at',
+            'statusHistory:id,application_id,status,notes,created_at',
+        ]);
 
-        return response()->json(['application' => $application]);
+        return response()->json([
+            'application' => new \App\Http\Resources\Applicant\ApplicationDetailResource($application),
+        ]);
     }
 
     /**
@@ -143,7 +167,8 @@ class ApplicationController extends Controller
      */
     public function updateStep(Request $request, Application $application): JsonResponse
     {
-        $this->authorizeApplicant($request, $application);
+        // LAYER 2: Policy-based authorization
+        $this->authorize('update', $application);
 
         if (!in_array($application->status, ['draft', 'additional_info_requested'])) {
             return response()->json(['message' => __('application.not_editable')], 422);
@@ -164,7 +189,8 @@ class ApplicationController extends Controller
      */
     public function update(Request $request, Application $application): JsonResponse
     {
-        $this->authorizeApplicant($request, $application);
+        // LAYER 2: Policy-based authorization
+        $this->authorize('update', $application);
 
         if (!in_array($application->status, ['draft', 'additional_info_requested'])) {
             return response()->json(['message' => __('application.not_editable')], 422);
@@ -197,7 +223,8 @@ class ApplicationController extends Controller
      */
     public function submit(Request $request, Application $application): JsonResponse
     {
-        $this->authorizeApplicant($request, $application);
+        // LAYER 2: Policy-based authorization
+        $this->authorize('submit', $application);
 
         if (!in_array($application->status, ['paid_submitted', 'pending_payment', 'submitted_awaiting_payment'])) {
             return response()->json(['message' => __('application.not_ready_for_submission')], 422);
@@ -220,7 +247,8 @@ class ApplicationController extends Controller
      */
     public function submitWithoutPayment(Request $request, Application $application): JsonResponse
     {
-        $this->authorizeApplicant($request, $application);
+        // LAYER 2: Policy-based authorization
+        $this->authorize('submit', $application);
 
         if (!in_array($application->status, ['draft', 'pending_payment'])) {
             return response()->json(['message' => 'Application cannot be submitted without payment at this stage'], 422);
@@ -244,7 +272,8 @@ class ApplicationController extends Controller
      */
     public function initiatePayment(Request $request, Application $application): JsonResponse
     {
-        $this->authorizeApplicant($request, $application);
+        // LAYER 2: Policy-based authorization
+        $this->authorize('view', $application);
 
         if (!in_array($application->status, ['draft', 'submitted_awaiting_payment', 'pending_payment'])) {
             return response()->json(['message' => __('application.not_payable')], 422);
@@ -256,13 +285,21 @@ class ApplicationController extends Controller
         }
 
         $application->update(['status' => 'pending_payment']);
-        $result = $this->paymentService->initiatePayment($application);
+        
+        // Use MultiPaymentService with default payment method (paystack) and currency (GHS)
+        $result = $this->paymentService->initializePayment(
+            $application,
+            'paystack', // default payment method
+            'GHS', // default currency
+            config('app.frontend_url') . '/payment/callback' // callback URL
+        );
 
         return response()->json([
             'message' => __('payment.initiated'),
-            'payment' => $result['payment'],
-            'checkout_url' => $result['checkout_url'],
-            'transaction_reference' => $result['transaction_reference'],
+            'success' => $result['success'] ?? true,
+            'provider' => $result['provider'] ?? 'paystack',
+            'authorization_url' => $result['authorization_url'] ?? $result['checkout_url'] ?? null,
+            'reference' => $result['reference'] ?? null,
         ]);
     }
 
@@ -271,7 +308,8 @@ class ApplicationController extends Controller
      */
     public function status(Request $request, Application $application): JsonResponse
     {
-        $this->authorizeApplicant($request, $application);
+        // LAYER 2: Policy-based authorization
+        $this->authorize('view', $application);
 
         $application->load('statusHistory.changedByUser');
 
@@ -293,7 +331,8 @@ class ApplicationController extends Controller
      */
     public function downloadEvisa(Request $request, Application $application): JsonResponse|\Symfony\Component\HttpFoundation\StreamedResponse
     {
-        $this->authorizeApplicant($request, $application);
+        // LAYER 2: Policy-based authorization
+        $this->authorize('downloadEvisa', $application);
 
         if (!in_array($application->status, ['approved', 'issued']) || !$application->evisa_file_path) {
             return response()->json(['message' => __('application.evisa_not_available')], 404);
@@ -322,7 +361,8 @@ class ApplicationController extends Controller
      */
     public function documents(Request $request, Application $application): JsonResponse
     {
-        $this->authorizeApplicant($request, $application);
+        // LAYER 2: Policy-based authorization
+        $this->authorize('view', $application);
 
         return response()->json([
             'documents' => $application->documents,
@@ -334,7 +374,8 @@ class ApplicationController extends Controller
      */
     public function downloadDocument(Request $request, Application $application, \App\Models\ApplicationDocument $document): \Symfony\Component\HttpFoundation\StreamedResponse|JsonResponse
     {
-        $this->authorizeApplicant($request, $application);
+        // LAYER 2: Policy-based authorization
+        $this->authorize('view', $application);
 
         if ($document->application_id !== $application->id) {
             return response()->json(['message' => 'Document not found'], 404);
@@ -359,7 +400,8 @@ class ApplicationController extends Controller
      */
     public function deleteDocument(Request $request, Application $application, \App\Models\ApplicationDocument $document): JsonResponse
     {
-        $this->authorizeApplicant($request, $application);
+        // LAYER 2: Policy-based authorization
+        $this->authorize('update', $application);
 
         if (!in_array($application->status, ['draft', 'additional_info_requested'])) {
             return response()->json(['message' => 'Cannot modify documents after submission'], 422);
@@ -386,7 +428,8 @@ class ApplicationController extends Controller
      */
     public function submitResponse(Request $request, Application $application): JsonResponse
     {
-        $this->authorizeApplicant($request, $application);
+        // LAYER 2: Policy-based authorization
+        $this->authorize('update', $application);
 
         if ($application->status !== 'additional_info_requested') {
             return response()->json([
@@ -422,7 +465,8 @@ class ApplicationController extends Controller
      */
     public function destroy(Request $request, Application $application): JsonResponse
     {
-        $this->authorizeApplicant($request, $application);
+        // LAYER 2: Policy-based authorization
+        $this->authorize('delete', $application);
 
         // Only allow deleting draft applications
         if ($application->status !== 'draft') {

@@ -234,7 +234,16 @@ class BorderController extends Controller
                     ], 404);
                 }
 
-                // Verify passport matches
+                if ($visa->entry_type === 'single' && $visa->last_entry_date) {
+                    return response()->json([
+                        'error' => [
+                            'code' => 'SINGLE_ENTRY_USED',
+                            'message' => 'This single-entry visa has already been used',
+                            'entry_date' => $visa->last_entry_date,
+                        ]
+                    ], 403);
+                }
+
                 $storedPassport = Crypt::decryptString($visa->passport_number_encrypted);
                 if (strtoupper($storedPassport) !== $passportNumber) {
                     return response()->json([
@@ -245,12 +254,13 @@ class BorderController extends Controller
                     ], 403);
                 }
 
-                // Record entry
                 $this->verificationService->markAsUsed(
                     $visa,
                     $validated['port_of_entry'],
                     auth()->id()
                 );
+                $stationId = auth()->user()->station_id ?? auth()->user()->border_station_id ?? null;
+                broadcast(new \App\Events\BorderVerificationResult($visa, 'AUTHORIZED', $validated['port_of_entry'], $stationId));
 
                 return response()->json([
                     'message' => 'Entry confirmed',

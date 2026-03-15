@@ -43,6 +43,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Data Retention Policy
+    |--------------------------------------------------------------------------
+    |
+    | Enable/disable automatic data retention policy application.
+    | Required for Ghana Data Protection Commission compliance.
+    |
+    */
+
+    'data_retention_enabled' => (bool) env('DATA_RETENTION_ENABLED', false),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application URL
     |--------------------------------------------------------------------------
     |
@@ -104,6 +116,22 @@ return [
             explode(',', (string) env('APP_PREVIOUS_KEYS', ''))
         ),
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Blind Index Key
+    |--------------------------------------------------------------------------
+    |
+    | This key is used for generating blind indexes (HMAC-SHA256 hashes) for
+    | searchable encrypted PII fields. This allows equality searches on
+    | encrypted data without decrypting it. This key MUST be different from
+    | APP_KEY and should be rotated separately.
+    |
+    | SECURITY: Rotating this key requires re-generating all blind indexes.
+    |
+    */
+
+    'blind_index_key' => env('BLIND_INDEX_KEY'),
 
     /*
     |--------------------------------------------------------------------------

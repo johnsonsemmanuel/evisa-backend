@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\PaginatesResults;
 use App\Models\Application;
 use App\Models\AuditLog;
 use App\Models\Payment;
@@ -14,6 +15,7 @@ use Illuminate\Support\Facades\Storage;
 
 class ReportController extends Controller
 {
+    use PaginatesResults;
     public function __construct(
         protected SlaService $slaService,
     ) {}
@@ -96,6 +98,8 @@ class ReportController extends Controller
     {
         $days = $request->query('days', 30);
 
+        // This is aggregated data by date and status, not individual records
+        // Safe to use ->get() as it returns max (30-365 days) × (3-4 statuses) rows
         $data = Payment::selectRaw('DATE(created_at) as date, SUM(amount) as total, COUNT(*) as count, status')
             ->where('created_at', '>=', now()->subDays($days))
             ->groupBy('date', 'status')
@@ -154,7 +158,8 @@ class ReportController extends Controller
             $query->where('created_at', '<=', $to);
         }
 
-        $logs = $query->orderBy('created_at', 'desc')->paginate(50);
+        $logs = $query->orderBy('created_at', 'desc')
+            ->paginate($this->getPerPage($request, 'admin_reports', 50));
 
         return response()->json($logs);
     }
@@ -182,7 +187,8 @@ class ReportController extends Controller
             $query->where('assigned_agency', $agency);
         }
 
-        $applications = $query->orderBy('created_at', 'desc')->paginate($request->query('per_page', 20));
+        $applications = $query->orderBy('created_at', 'desc')
+            ->paginate($this->getPerPage($request, 'applications'));
 
         return response()->json($applications);
     }
@@ -198,7 +204,8 @@ class ReportController extends Controller
             $query->where('status', $status);
         }
 
-        $payments = $query->orderBy('created_at', 'desc')->paginate($request->query('per_page', 20));
+        $payments = $query->orderBy('created_at', 'desc')
+            ->paginate($this->getPerPage($request, 'payments'));
 
         return response()->json($payments);
     }

@@ -274,6 +274,9 @@ class PassportVerificationService
         $service = $services[$nationality];
         
         try {
+            // SECURITY: Validate external URL against SSRF allowlist
+            app(\App\Services\ExternalUrlValidator::class)->validateExternalUrl($service['endpoint']);
+            
             $response = Http::timeout(10)
                 ->withHeaders($service['headers'])
                 ->post($service['endpoint'], [
@@ -293,6 +296,12 @@ class PassportVerificationService
                 ];
             }
 
+        } catch (\App\Exceptions\UnauthorizedExternalRequestException $e) {
+            Log::error('Passport verification URL blocked by SSRF protection', [
+                'service' => $service['name'],
+                'endpoint' => $service['endpoint'],
+                'error' => $e->getMessage(),
+            ]);
         } catch (\Exception $e) {
             Log::error('Passport verification API error', [
                 'service' => $service['name'],
@@ -353,7 +362,7 @@ class PassportVerificationService
         return [
             'US' => [
                 'name' => 'US State Department API',
-                'endpoint' => env('US_PASSPORT_API_URL', 'https://api.state.gov/passport/verify'),
+                'endpoint' => config('services.passport_verification.us_api_url'),
                 'headers' => [
                     'Authorization' => 'Bearer ' . env('US_PASSPORT_API_KEY'),
                     'Content-Type' => 'application/json',
@@ -361,7 +370,7 @@ class PassportVerificationService
             ],
             'GB' => [
                 'name' => 'UK Home Office API',
-                'endpoint' => env('UK_PASSPORT_API_URL', 'https://api.gov.uk/passport/verify'),
+                'endpoint' => config('services.passport_verification.uk_api_url'),
                 'headers' => [
                     'Authorization' => 'Bearer ' . env('UK_PASSPORT_API_KEY'),
                     'Content-Type' => 'application/json',
@@ -369,7 +378,7 @@ class PassportVerificationService
             ],
             'NG' => [
                 'name' => 'Nigeria Immigration Service API',
-                'endpoint' => env('NG_PASSPORT_API_URL', 'https://api.immigration.gov.ng/passport/verify'),
+                'endpoint' => config('services.passport_verification.ng_api_url'),
                 'headers' => [
                     'Authorization' => 'Bearer ' . env('NG_PASSPORT_API_KEY'),
                     'Content-Type' => 'application/json',

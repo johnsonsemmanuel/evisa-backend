@@ -2,417 +2,342 @@
 
 namespace App\Services;
 
+use App\Exceptions\AeropassApiException;
+use App\Exceptions\AeropassSubmissionException;
+use App\Exceptions\AeropassUnavailableException;
+use App\Exceptions\AeropassValidationException;
+use App\Models\AeropassAuditLog;
 use App\Models\Application;
 use App\Models\InterpolCheck;
+use Carbon\Carbon;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Psr\Log\LoggerInterface;
 use Exception;
 
 class AeropassService
 {
+    private PendingRequest $client;
     private string $baseUrl;
-    private string $username;
-    private string $password;
-    private int $timeout;
-    private int $retryDelay;
-    private int $maxRetries;
+    private LoggerInterface $logger;
 
-    public function __construct()
+    public function __construct(LoggerInterface $logger)
     {
-        $this->baseUrl = config('services.aeropass.base_url');
-        $this->username = config('services.aeropass.username');
-        $this->password = config('services.aeropass.password');
-        $this->timeout = config('services.aeropass.timeout', 20);
-        $this->retryDelay = config('services.aeropass.retry_delay', 2);
-        $this->maxRetries = config('services.aeropass.max_retries', 3);
+        $this->logger = $logger;
+        $this->baseUrl = rtrim((string) config('aeropass.base_url', config('services.aeropass.base_url', '')), '/');
+        $timeout = (int) config('aeropass.timeout_seconds', config('aeropass.timeout', 30));
+
+        if ($this->baseUrl && class_exists(\App\Services\ExternalUrlValidator::class)) {
+            app(\App\Services\ExternalUrlValidator::class)->validateExternalUrl($this->baseUrl);
+        }
+
+        $this->client = Http::baseUrl($this->baseUrl)
+            ->withBasicAuth(
+                config('aeropass.username') ?? config('services.aeropass.username'),
+                config('aeropass.password') ?? config('services.aeropass.password')
+            )
+            ->timeout($timeout)
+            ->retry(3, 1000, function (Exception $exception): bool {
+                if ($exception instanceof ConnectionException) {
+                    return true;
+                }
+                if (method_exists($exception, 'response')) {
+                    $response = $exception->response ?? null;
+                    return $response && method_exists($response, 'serverError') && $response->serverError();
+                }
+                return false;
+            });
     }
 
     /**
-     * Submit traveler details for Interpol nominal verification
+     * Normalise date for Aeropass (ICD: YYYY-MM-DD, UTC).
+     * NEVER send null to Aeropass for required fields — validate before calling.
+     */
+    private function normaliseDateForAeropass(Carbon|string|null $date): ?string
+    {
+        if ($date === null || $date === '') {
+            return null;
+        }
+        $d = $date instanceof Carbon ? $date : Carbon::parse($date);
+        return $d->utc()->format('Y-m-d');
+    }
+
+    /**
+     * Ensure required date is present; throw AeropassValidationException if missing.
+     */
+    private function requireDate(Carbon|string|null $date, string $fieldName): string
+    {
+        $normalised = $this->normaliseDateForAeropass($date);
+        if ($normalised === null || $normalised === '') {
+            throw new AeropassValidationException(
+                "Aeropass requires {$fieldName} but it is missing or invalid.",
+                0,
+                null,
+                $fieldName
+            );
+        }
+        return $normalised;
+    }
+
+    /**
+     * Get applicant data from application (decrypted PII via accessors).
+     * Application holds applicant data directly; no separate Applicant model.
+     */
+    private function getApplicantData(Application $application): object
+    {
+        $dob = $application->date_of_birth;
+        if (is_string($dob)) {
+            $dob = $dob ? Carbon::parse($dob) : null;
+        }
+        $expiry = $application->passport_expiry ?? null;
+        $issue = $application->passport_issue_date ?? null;
+        $gender = $application->gender;
+        if (is_string($gender)) {
+            $gender = strtoupper(substr($gender, 0, 1)) === 'F' ? 'F' : 'M';
+        }
+        return (object) [
+            'first_name' => $application->first_name ?? '',
+            'last_name' => $application->last_name ?? '',
+            'date_of_birth' => $dob,
+            'nationality_code' => $application->nationality ?? '',
+            'passport_number' => $application->passport_number ?? '',
+            'passport_expiry_date' => $expiry,
+            'passport_issue_date' => $issue,
+            'gender' => $gender,
+        ];
+    }
+
+    /**
+     * Interpol Nominal Check (ASYNC). POST /api/v1/nominal-check → 202.
+     * Returns transactionId for callback matching; store on application in job.
+     */
+    public function submitNominalCheck(Application $application, string $callbackUrl): array
+    {
+        $applicant = $this->getApplicantData($application);
+
+        $transactionId = 'EVISA-' . $application->id . '-' . time();
+        $dateOfBirth = $this->requireDate($applicant->date_of_birth, 'dateOfBirth');
+        $documentExpiry = $this->requireDate($applicant->passport_expiry_date, 'documentExpiry');
+
+        $payload = [
+            'transactionId' => $transactionId,
+            'surname' => $applicant->last_name,
+            'forename' => $applicant->first_name,
+            'sex' => $applicant->gender,
+            'dateOfBirth' => $dateOfBirth,
+            'nationality' => $applicant->nationality_code,
+            'documentNumber' => $applicant->passport_number,
+            'documentType' => 'P',
+            'documentExpiry' => $documentExpiry,
+            'callbackUrl' => $callbackUrl,
+        ];
+
+        $response = $this->client->post('/api/v1/nominal-check', $payload);
+
+        if ($response->status() !== 202) {
+            $this->throwFromResponse($response);
+        }
+
+        $responseData = $response->json();
+        $this->storeAuditRecord($application, 'nominal_check_submitted', $payload, $responseData ?? []);
+
+        $this->logger->info('Aeropass nominal check submitted (202)', [
+            'application_id' => $application->id,
+            'transaction_id' => $transactionId,
+        ]);
+
+        return array_merge($responseData ?? [], ['transaction_id' => $transactionId]);
+    }
+
+    /**
+     * E-Visa Record Check (SYNCHRONOUS). POST /api/v1/evisa-record-check.
+     * Shorter timeout; do not block submission on failure.
+     */
+    public function checkExistingVisaRecord(Application $application): array
+    {
+        $applicant = $this->getApplicantData($application);
+        $dateOfBirth = $this->normaliseDateForAeropass($applicant->date_of_birth);
+
+        $payload = [
+            'documentNumber' => $applicant->passport_number,
+            'nationality' => $applicant->nationality_code,
+            'dateOfBirth' => $dateOfBirth,
+        ];
+
+        $response = $this->client->timeout(15)->post('/api/v1/evisa-record-check', $payload);
+        $responseData = $response->json() ?? [];
+        $this->storeAuditRecord($application, 'evisa_record_check', $payload, $responseData);
+
+        if ($response->failed()) {
+            Log::warning('Aeropass e-visa record check failed', [
+                'application_id' => $application->id,
+                'status' => $response->status(),
+            ]);
+            return ['status' => 'check_unavailable', 'previous_visas' => []];
+        }
+
+        return $responseData;
+    }
+
+    /**
+     * ICAO audit: store all Aeropass request/response (encrypted).
+     */
+    private function storeAuditRecord(Application $application, string $type, array $request, array $response): void
+    {
+        AeropassAuditLog::create([
+            'application_id' => $application->id,
+            'interaction_type' => $type,
+            'request_payload' => encrypt(json_encode($this->sanitiseForAudit($request))),
+            'response_payload' => encrypt(json_encode($response)),
+            'performed_at' => now(),
+        ]);
+    }
+
+    /**
+     * Mask sensitive fields in audit logs.
+     */
+    private function sanitiseForAudit(array $payload): array
+    {
+        $out = $payload;
+        if (isset($out['documentNumber']) && is_string($out['documentNumber'])) {
+            $out['documentNumber'] = '***' . substr($out['documentNumber'], -3);
+        }
+        if (isset($out['passport_number'])) {
+            $out['passport_number'] = '***' . substr((string) $out['passport_number'], -3);
+        }
+        return $out;
+    }
+
+    private function throwFromResponse(\Illuminate\Http\Client\Response $response): void
+    {
+        $status = $response->status();
+        $body = $response->body();
+        if ($status >= 400 && $status < 500) {
+            throw new AeropassSubmissionException("Aeropass returned {$status}: " . $body, $status);
+        }
+        throw AeropassApiException::fromResponse($status, $body);
+    }
+
+    // ----- Legacy / compatibility (existing callers) -----
+
+    public function generateUniqueReferenceId(Application $application): string
+    {
+        return 'EVISA-' . $application->id . '-' . time();
+    }
+
+    /**
+     * Legacy: submit Interpol check (sync flow using InterpolCheck model).
      */
     public function submitInterpolCheck(Application $application): InterpolCheck
     {
         $uniqueReferenceId = $this->generateUniqueReferenceId($application);
-
-        // Create or update Interpol check record
         $interpolCheck = InterpolCheck::updateOrCreate(
             ['application_id' => $application->id],
             [
                 'unique_reference_id' => $uniqueReferenceId,
                 'first_name' => $application->first_name,
                 'surname' => $application->last_name,
-                'date_of_birth' => $application->date_of_birth,
+                'date_of_birth' => $application->date_of_birth ? Carbon::parse($application->date_of_birth) : null,
                 'status' => 'pending',
                 'retry_count' => 0,
             ]
         );
 
         try {
-            $response = $this->sendInterpolRequest($interpolCheck);
-            
-            if ($response['success']) {
-                Log::info('Interpol check submitted successfully', [
-                    'application_id' => $application->id,
-                    'unique_reference_id' => $uniqueReferenceId,
-                    'response_code' => $response['data']['responseCode'] ?? null,
-                ]);
-            } else {
-                $interpolCheck->update([
-                    'status' => 'failed',
-                    'last_error' => $response['error'] ?? 'Unknown error',
-                ]);
-                
-                Log::error('Interpol check submission failed', [
-                    'application_id' => $application->id,
-                    'error' => $response['error'] ?? 'Unknown error',
-                ]);
+            $payload = [
+                'uniqueReferenceId' => $uniqueReferenceId,
+                'firstName' => $application->first_name,
+                'surname' => $application->last_name,
+                'dateOfBirth' => $this->normaliseDateForAeropass($application->date_of_birth ? Carbon::parse($application->date_of_birth) : null),
+            ];
+            $response = $this->client->post($this->baseUrl . '/aeropass/e-visa/interpol-nominal-verification', $payload);
+            if ($response->successful()) {
+                $interpolCheck->update(['retry_count' => 0]);
+                return $interpolCheck;
             }
+            $interpolCheck->update(['status' => 'failed', 'last_error' => $response->body()]);
         } catch (Exception $e) {
-            $interpolCheck->update([
-                'status' => 'failed',
-                'last_error' => $e->getMessage(),
-            ]);
-            
-            Log::error('Interpol check submission exception', [
-                'application_id' => $application->id,
-                'error' => $e->getMessage(),
-            ]);
+            $interpolCheck->update(['status' => 'failed', 'last_error' => $e->getMessage()]);
         }
-
         return $interpolCheck;
     }
 
-    /**
-     * Send Interpol verification request to Aeropass
-     */
-    private function sendInterpolRequest(InterpolCheck $interpolCheck): array
-    {
-        $payload = [
-            'uniqueReferenceId' => $interpolCheck->unique_reference_id,
-            'firstName' => $interpolCheck->first_name,
-            'surname' => $interpolCheck->surname,
-            'dateOfBirth' => $interpolCheck->date_of_birth->format('d/m/Y'),
-        ];
-
-        $headers = [
-            'Authorization' => 'Basic ' . base64_encode($this->username . ':' . $this->password),
-            'Content-Type' => 'application/json',
-            'Accept' => 'application/json',
-        ];
-
-        $retryCount = 0;
-        
-        while ($retryCount <= $this->maxRetries) {
-            try {
-                $response = Http::withHeaders($headers)
-                    ->timeout($this->timeout)
-                    ->post($this->baseUrl . '/aeropass/e-visa/interpol-nominal-verification', $payload);
-
-                if ($response->successful()) {
-                    $data = $response->json();
-                    
-                    // Update retry count
-                    $interpolCheck->update(['retry_count' => $retryCount]);
-                    
-                    return [
-                        'success' => true,
-                        'data' => $data,
-                    ];
-                } else {
-                    $error = "HTTP {$response->status()}: " . $response->body();
-                    
-                    if ($retryCount >= $this->maxRetries) {
-                        return [
-                            'success' => false,
-                            'error' => $error,
-                        ];
-                    }
-                }
-            } catch (Exception $e) {
-                if ($retryCount >= $this->maxRetries) {
-                    return [
-                        'success' => false,
-                        'error' => $e->getMessage(),
-                    ];
-                }
-            }
-
-            $retryCount++;
-            if ($retryCount <= $this->maxRetries) {
-                sleep($this->retryDelay);
-            }
-        }
-
-        return [
-            'success' => false,
-            'error' => 'Max retries exceeded',
-        ];
-    }
-
-    /**
-     * Process callback from Aeropass with Interpol check results
-     */
     public function processInterpolCallback(array $callbackData): array
     {
-        try {
-            $uniqueReferenceId = $callbackData['uniqueReferenceId'] ?? null;
-            
-            if (!$uniqueReferenceId) {
-                return [
-                    'success' => false,
-                    'error' => 'Missing uniqueReferenceId',
-                    'response_code' => '400',
-                ];
-            }
-
-            $interpolCheck = InterpolCheck::where('unique_reference_id', $uniqueReferenceId)->first();
-            
-            if (!$interpolCheck) {
-                return [
-                    'success' => false,
-                    'error' => 'Interpol check record not found',
-                    'response_code' => '400',
-                ];
-            }
-
-            // Validate callback data
-            $requiredFields = ['firstName', 'surname', 'dateOfBirth', 'interpolNominalMatched'];
-            foreach ($requiredFields as $field) {
-                if (!isset($callbackData[$field])) {
-                    return [
-                        'success' => false,
-                        'error' => "Missing mandatory field: {$field}",
-                        'response_code' => '400',
-                    ];
-                }
-            }
-
-            // Update Interpol check record
-            $isMatched = strtolower($callbackData['interpolNominalMatched']) === 'yes';
-            
-            $interpolCheck->update([
-                'status' => $isMatched ? 'matched' : 'no_match',
-                'interpol_nominal_matched' => $isMatched,
-                'aeropass_response' => $callbackData,
-                'callback_received_at' => now(),
-            ]);
-
-            // Update application status if there's a match
-            if ($isMatched) {
-                $application = $interpolCheck->application;
-                $application->update([
-                    'watchlist_flagged' => true,
-                    'watchlist_reason' => 'Interpol nominal match detected',
-                ]);
-
-                Log::warning('Interpol match detected', [
-                    'application_id' => $application->id,
-                    'unique_reference_id' => $uniqueReferenceId,
-                    'applicant_name' => $callbackData['firstName'] . ' ' . $callbackData['surname'],
-                ]);
-            }
-
-            Log::info('Interpol callback processed successfully', [
-                'unique_reference_id' => $uniqueReferenceId,
-                'matched' => $isMatched,
-            ]);
-
-            return [
-                'success' => true,
-                'response_code' => '200',
-            ];
-
-        } catch (Exception $e) {
-            Log::error('Interpol callback processing failed', [
-                'error' => $e->getMessage(),
-                'callback_data' => $callbackData,
-            ]);
-
-            return [
-                'success' => false,
-                'error' => 'Internal server error',
-                'response_code' => '500',
-            ];
+        $uniqueReferenceId = $callbackData['uniqueReferenceId'] ?? null;
+        if (!$uniqueReferenceId) {
+            return ['success' => false, 'error' => 'Missing uniqueReferenceId', 'response_code' => '400'];
         }
+        $interpolCheck = InterpolCheck::where('unique_reference_id', $uniqueReferenceId)->first();
+        if (!$interpolCheck) {
+            return ['success' => false, 'error' => 'Interpol check record not found', 'response_code' => '400'];
+        }
+        $isMatched = strtolower($callbackData['interpolNominalMatched'] ?? '') === 'yes';
+        $interpolCheck->update([
+            'status' => $isMatched ? 'matched' : 'no_match',
+            'interpol_nominal_matched' => $isMatched,
+            'aeropass_response' => $callbackData,
+            'callback_received_at' => now(),
+        ]);
+        if ($isMatched) {
+            $interpolCheck->application?->update(['watchlist_flagged' => true, 'watchlist_reason' => 'Interpol nominal match detected']);
+        }
+        return ['success' => true, 'response_code' => '200'];
     }
 
-    /**
-     * Handle E-Visa check request from Aeropass
-     */
     public function processEVisaCheck(array $requestData): array
     {
-        try {
-            // Validate required fields
-            $requiredFields = ['uniqueReferenceId', 'firstName', 'surname', 'dateOfBirth', 'nationality', 'travelDocNumber'];
-            foreach ($requiredFields as $field) {
-                if (!isset($requestData[$field])) {
-                    return [
-                        'success' => false,
-                        'error' => "Missing mandatory field: {$field}",
-                        'response_code' => 400,
-                    ];
-                }
-            }
-
-            // Search for matching application
-            $application = $this->findMatchingApplication($requestData);
-
-            if (!$application) {
-                return [
-                    'success' => false,
-                    'error' => 'No matching E-Visa found',
-                    'response_code' => 404,
-                    'data' => [
-                        'uniqueReferenceId' => $requestData['uniqueReferenceId'],
-                        'errorMessage' => 'No matching E-Visa found for the provided traveler details',
-                    ],
-                ];
-            }
-
-            // Build response data
-            $responseData = $this->buildEVisaResponse($application, $requestData['uniqueReferenceId']);
-
-            Log::info('E-Visa check processed successfully', [
-                'unique_reference_id' => $requestData['uniqueReferenceId'],
-                'application_id' => $application->id,
-                'passport_number' => $requestData['travelDocNumber'],
-            ]);
-
-            return [
-                'success' => true,
-                'response_code' => 200,
-                'data' => $responseData,
-            ];
-
-        } catch (Exception $e) {
-            Log::error('E-Visa check processing failed', [
-                'error' => $e->getMessage(),
-                'request_data' => $requestData,
-            ]);
-
+        $application = $this->findMatchingApplication($requestData);
+        if (!$application) {
             return [
                 'success' => false,
-                'error' => 'Internal server error',
-                'response_code' => 500,
-                'data' => [
-                    'uniqueReferenceId' => $requestData['uniqueReferenceId'] ?? '',
-                    'errorMessage' => 'Internal server error occurred while processing the request',
-                ],
+                'error' => 'No matching E-Visa found',
+                'response_code' => 404,
+                'data' => ['uniqueReferenceId' => $requestData['uniqueReferenceId'] ?? '', 'errorMessage' => 'No matching E-Visa found'],
             ];
         }
+        return [
+            'success' => true,
+            'response_code' => 200,
+            'data' => $this->buildEVisaResponse($application, $requestData['uniqueReferenceId'] ?? ''),
+        ];
     }
 
-    /**
-     * Find matching application based on traveler details
-     */
     private function findMatchingApplication(array $requestData): ?Application
     {
-        $query = Application::where('status', 'issued')
-            ->where('first_name', 'LIKE', '%' . $requestData['firstName'] . '%')
-            ->where('last_name', 'LIKE', '%' . $requestData['surname'] . '%')
-            ->where('nationality', $requestData['nationality'])
-            ->where('passport_number', $requestData['travelDocNumber']);
-
-        // Try exact date match first
-        if (isset($requestData['dateOfBirth'])) {
-            $dateOfBirth = \Carbon\Carbon::createFromFormat('Y-m-d', $requestData['dateOfBirth']);
-            $query->where('date_of_birth', $dateOfBirth->format('Y-m-d'));
+        $firstName = trim($requestData['firstName'] ?? '');
+        $lastName = trim($requestData['surname'] ?? '');
+        $nationality = trim($requestData['nationality'] ?? '');
+        $passportNumber = trim($requestData['travelDocNumber'] ?? '');
+        $query = Application::withoutGlobalScopes()->where('status', 'issued')
+            ->where('first_name', 'like', '%' . addcslashes($firstName, '%_\\') . '%')
+            ->where('last_name', 'like', '%' . addcslashes($lastName, '%_\\') . '%')
+            ->where('nationality', $nationality)
+            ->where('passport_number', $passportNumber);
+        if (!empty($requestData['dateOfBirth'])) {
+            $dob = Carbon::parse($requestData['dateOfBirth'])->format('Y-m-d');
+            $query->where('date_of_birth', $dob);
         }
-
-        return $query->with(['visaType', 'documents'])->first();
+        return $query->first();
     }
 
-    /**
-     * Build E-Visa response data
-     */
     private function buildEVisaResponse(Application $application, string $uniqueReferenceId): array
     {
-        // Get passport photo and copy (Base64 encoded)
-        $passportPhoto = $this->getDocumentBase64($application, 'passport_bio');
-        $passportCopy = $this->getDocumentBase64($application, 'passport_bio');
-        
-        // Get supporting documents
-        $supportingDocs = $this->getSupportingDocuments($application);
-
-        // Calculate planned departure date (arrival + duration)
-        $plannedDepartureDate = null;
-        if ($application->intended_arrival && $application->duration_days) {
-            $plannedDepartureDate = \Carbon\Carbon::parse($application->intended_arrival)
-                ->addDays($application->duration_days)
-                ->format('Y-m-d');
-        }
-
         return [
             'uniqueReferenceId' => $uniqueReferenceId,
             'firstName' => $application->first_name,
             'surname' => $application->last_name,
-            'dateOfBirth' => $application->date_of_birth ? $application->date_of_birth->format('Y-m-d') : null,
+            'dateOfBirth' => $this->normaliseDateForAeropass($application->date_of_birth),
             'nationality' => $application->nationality,
             'travelDocNumber' => $application->passport_number,
             'visaType' => $application->visaType?->name ?? 'UNKNOWN',
             'emailAddress' => $application->email,
-            'contactNumber' => $application->phone_code . $application->phone,
-            'plannedArrivalDate' => $application->intended_arrival ? \Carbon\Carbon::parse($application->intended_arrival)->format('Y-m-d') : null,
-            'plannedDepartureDate' => $plannedDepartureDate,
-            'purposeOfVisit' => $application->purpose_of_visit ?? $application->visaType?->name ?? 'Not specified',
-            'passportPhoto' => $passportPhoto,
-            'passportCopy' => $passportCopy,
-            'supportingDocs' => $supportingDocs,
+            'contactNumber' => ($application->phone_code ?? '') . ($application->phone ?? ''),
+            'plannedArrivalDate' => $application->intended_arrival ? Carbon::parse($application->intended_arrival)->format('Y-m-d') : null,
+            'purposeOfVisit' => $application->purpose_of_visit ?? '',
             'errorMessage' => null,
         ];
-    }
-
-    /**
-     * Get document as Base64 encoded string
-     */
-    private function getDocumentBase64(Application $application, string $documentType): ?string
-    {
-        $document = $application->documents()
-            ->where('document_type', $documentType)
-            ->where('verification_status', 'verified')
-            ->first();
-
-        if (!$document) {
-            return null;
-        }
-
-        $filePath = storage_path('app/' . $document->stored_path);
-        
-        if (!file_exists($filePath)) {
-            return null;
-        }
-
-        return base64_encode(file_get_contents($filePath));
-    }
-
-    /**
-     * Get supporting documents as Base64 encoded array
-     */
-    private function getSupportingDocuments(Application $application): array
-    {
-        $supportingDocs = [];
-        
-        $documents = $application->documents()
-            ->whereNotIn('document_type', ['passport_bio', 'photo'])
-            ->where('verification_status', 'verified')
-            ->get();
-
-        foreach ($documents as $document) {
-            $filePath = storage_path('app/' . $document->stored_path);
-            
-            if (file_exists($filePath)) {
-                $supportingDocs[] = base64_encode(file_get_contents($filePath));
-            }
-        }
-
-        return $supportingDocs;
-    }
-
-    /**
-     * Generate unique reference ID for Interpol check
-     */
-    private function generateUniqueReferenceId(Application $application): string
-    {
-        return 'EVISA-' . $application->id . '-' . time();
     }
 }

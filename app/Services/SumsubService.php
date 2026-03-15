@@ -2,388 +2,245 @@
 
 namespace App\Services;
 
-use App\Models\Application;
-use App\Models\EtaApplication;
-use App\Models\SumsubVerification;
+use App\Enums\KycStatus;
+use App\Exceptions\SumsubApiException;
+use App\Models\User;
+use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Crypt;
 
 class SumsubService
 {
-    protected string $appToken;
-    protected string $secretKey;
-    protected string $baseUrl;
+    private string $appToken;
+    private string $secretKey;
+    private string $baseUrl;
+    private int $timeout;
 
     public function __construct()
     {
         $this->appToken = config('sumsub.app_token');
         $this->secretKey = config('sumsub.secret_key');
-        $this->baseUrl = config('sumsub.base_url', 'https://api.sumsub.com');
+        $this->baseUrl = rtrim(config('sumsub.base_url', 'https://api.sumsub.com'), '/');
+        $this->timeout = (int) config('sumsub.timeout', 30);
+
+        if ($this->baseUrl && class_exists(\App\Services\ExternalUrlValidator::class)) {
+            app(\App\Services\ExternalUrlValidator::class)->validateExternalUrl($this->baseUrl);
+        }
     }
 
     /**
-     * Generate access token for Sumsub SDK.
+     * Create applicant in Sumsub; store applicantId on user.
+     * POST /resources/applicants?levelName={levelName}
      */
-    public function generateAccessToken(string $externalUserId, string $levelName = 'basic-kyc-level'): array
+    public function createApplicant(User $applicant): array
     {
-        $timestamp = time();
-        $method = 'POST';
-        $url = '/resources/accessTokens?userId=' . $externalUserId . '&levelName=' . $levelName;
-        
+        $levelName = config('sumsub.kyc_level', 'basic-kyc-level');
+        $path = '/resources/applicants?levelName=' . rawurlencode($levelName);
         $body = json_encode([
-            'userId' => $externalUserId,
-            'levelName' => $levelName,
-            'ttlInSecs' => 3600, // 1 hour
+            'externalUserId' => (string) $applicant->id,
+            'email' => $applicant->email ?? '',
+            'phone' => $applicant->phone ?? '',
+        ]);
+        $headers = $this->signRequest('POST', $path, $body);
+
+        $response = $this->client()->withHeaders($headers)->post($this->baseUrl . $path, json_decode($body, true));
+
+        if (!$response->successful()) {
+            $this->throwFromResponse($response, null);
+        }
+
+        $data = $response->json();
+        $applicantId = $data['id'] ?? null;
+        if (!$applicantId) {
+            throw new SumsubApiException('Sumsub response missing applicant id', 0, null, $response->status(), null, null);
+        }
+
+        $applicant->update([
+            'sumsub_applicant_id' => $applicantId,
+            'kyc_level' => $levelName,
         ]);
 
-        $signature = $this->generateSignature($method, $url, $body, $timestamp);
+        Log::info('Sumsub applicant created', ['applicant_id' => $applicantId, 'user_id' => $applicant->id]);
 
-        try {
-            $response = Http::withHeaders([
-                'Accept' => 'application/json',
-                'Content-Type' => 'application/json',
-                'X-App-Token' => $this->appToken,
-                'X-App-Access-Sig' => $signature,
-                'X-App-Access-Ts' => $timestamp,
-            ])->post($this->baseUrl . $url, json_decode($body, true));
-
-            if ($response->successful()) {
-                $data = $response->json();
-                
-                Log::info('Sumsub access token generated', [
-                    'external_user_id' => $externalUserId,
-                    'level_name' => $levelName,
-                ]);
-
-                return [
-                    'success' => true,
-                    'token' => $data['token'],
-                    'userId' => $data['userId'],
-                ];
-            }
-
-            Log::error('Failed to generate Sumsub access token', [
-                'external_user_id' => $externalUserId,
-                'status' => $response->status(),
-                'response' => $response->body(),
-            ]);
-
-            return [
-                'success' => false,
-                'error' => 'Failed to generate access token',
-                'details' => $response->json(),
-            ];
-
-        } catch (\Exception $e) {
-            Log::error('Sumsub access token generation exception', [
-                'external_user_id' => $externalUserId,
-                'error' => $e->getMessage(),
-            ]);
-
-            return [
-                'success' => false,
-                'error' => 'Service unavailable',
-                'details' => $e->getMessage(),
-            ];
-        }
+        return [
+            'applicant_id' => $applicantId,
+            'created_at' => $data['createdAt'] ?? now()->toIso8601String(),
+        ];
     }
 
     /**
-     * Get applicant status from Sumsub.
+     * Get required ID docs status; map to KycStatus.
+     * GET /resources/applicants/{applicantId}/requiredIdDocsStatus
      */
-    public function getApplicantStatus(string $applicantId): array
+    public function getApplicantStatus(string $sumsubApplicantId): array
     {
-        $timestamp = time();
-        $method = 'GET';
-        $url = '/resources/applicants/' . $applicantId . '/status';
+        $path = '/resources/applicants/' . rawurlencode($sumsubApplicantId) . '/requiredIdDocsStatus';
+        $headers = $this->signRequest('GET', $path, '');
 
-        $signature = $this->generateSignature($method, $url, '', $timestamp);
+        $response = $this->client()->withHeaders($headers)->get($this->baseUrl . $path);
 
-        try {
-            $response = Http::withHeaders([
-                'Accept' => 'application/json',
-                'X-App-Token' => $this->appToken,
-                'X-App-Access-Sig' => $signature,
-                'X-App-Access-Ts' => $timestamp,
-            ])->get($this->baseUrl . $url);
-
-            if ($response->successful()) {
-                return [
-                    'success' => true,
-                    'data' => $response->json(),
-                ];
-            }
-
-            return [
-                'success' => false,
-                'error' => 'Failed to get applicant status',
-                'details' => $response->json(),
-            ];
-
-        } catch (\Exception $e) {
-            Log::error('Sumsub get applicant status exception', [
-                'applicant_id' => $applicantId,
-                'error' => $e->getMessage(),
-            ]);
-
-            return [
-                'success' => false,
-                'error' => 'Service unavailable',
-                'details' => $e->getMessage(),
-            ];
+        if (!$response->successful()) {
+            $this->throwFromResponse($response, $sumsubApplicantId);
         }
+
+        $data = $response->json();
+        $reviewStatus = $data['reviewStatus'] ?? $data['review']['reviewStatus'] ?? null;
+        $reviewResult = $data['reviewResult'] ?? $data['review']['reviewResult'] ?? null;
+        $answer = $reviewResult['reviewAnswer'] ?? $reviewStatus ?? null;
+
+        $kycStatus = $this->mapToKycStatus($answer, $data);
+
+        return [
+            'review_status' => $reviewStatus,
+            'review_result' => $reviewResult,
+            'kyc_status' => $kycStatus,
+            'data' => $data,
+        ];
     }
 
     /**
-     * Handle webhook from Sumsub.
+     * Full applicant record including review.reviewResult.
+     * GET /resources/applicants/{applicantId}/one
      */
-    public function handleWebhook(array $payload): bool
+    public function getApplicantReviewResult(string $sumsubApplicantId): array
     {
-        try {
-            $applicantId = $payload['applicantId'] ?? null;
-            $inspectionId = $payload['inspectionId'] ?? null;
-            $correlationId = $payload['correlationId'] ?? null;
-            $levelName = $payload['levelName'] ?? null;
-            $externalUserId = $payload['externalUserId'] ?? null;
-            $type = $payload['type'] ?? null;
-            $reviewStatus = $payload['reviewStatus'] ?? null;
-            $createdAt = $payload['createdAt'] ?? null;
+        $path = '/resources/applicants/' . rawurlencode($sumsubApplicantId) . '/one';
+        $headers = $this->signRequest('GET', $path, '');
 
-            if (!$applicantId) {
-                Log::warning('Sumsub webhook missing applicantId', $payload);
-                return false;
-            }
+        $response = $this->client()->withHeaders($headers)->get($this->baseUrl . $path);
 
-            // Find existing verification record
-            $verification = SumsubVerification::where('applicant_id', $applicantId)->first();
-
-            if (!$verification) {
-                Log::warning('Sumsub webhook for unknown applicant', [
-                    'applicant_id' => $applicantId,
-                    'external_user_id' => $externalUserId,
-                ]);
-                return false;
-            }
-
-            // Update verification status
-            $verification->update([
-                'verification_status' => $this->mapVerificationStatus($type),
-                'review_result' => $this->mapReviewResult($reviewStatus),
-                'verification_data' => $payload,
-                'reviewed_at' => $createdAt ? now()->parse($createdAt) : now(),
-            ]);
-
-            // Update related application
-            $this->updateRelatedApplication($verification, $reviewStatus);
-
-            Log::info('Sumsub webhook processed', [
-                'applicant_id' => $applicantId,
-                'type' => $type,
-                'review_status' => $reviewStatus,
-                'verification_id' => $verification->id,
-            ]);
-
-            return true;
-
-        } catch (\Exception $e) {
-            Log::error('Sumsub webhook processing failed', [
-                'payload' => $payload,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
-
-            return false;
+        if (!$response->successful()) {
+            $this->throwFromResponse($response, $sumsubApplicantId);
         }
+
+        $data = $response->json();
+        $review = $data['review'] ?? [];
+        $reviewResult = $review['reviewResult'] ?? [];
+        $rejectionLabels = $reviewResult['rejectLabels'] ?? $reviewResult['rejectionLabels'] ?? [];
+
+        return [
+            'applicant' => $data,
+            'review' => $review,
+            'review_result' => $reviewResult,
+            'rejection_labels' => $rejectionLabels,
+        ];
     }
 
     /**
-     * Create verification record for application.
+     * Generate access token for Sumsub SDK (frontend).
+     * POST /resources/accessTokens?userId=...&levelName=...&ttlInSecs=...
      */
-    public function createVerificationForApplication($application, string $applicationType = 'visa'): SumsubVerification
+    public function generateAccessToken(User $applicant, int $ttlInSecs = 3600): string
     {
-        $externalUserId = $this->generateExternalUserId($application, $applicationType);
+        $externalUserId = (string) $applicant->id;
+        $levelName = $applicant->kyc_level ?? config('sumsub.kyc_level', 'basic-kyc-level');
+        $path = '/resources/accessTokens?userId=' . rawurlencode($externalUserId)
+            . '&levelName=' . rawurlencode($levelName)
+            . '&ttlInSecs=' . $ttlInSecs;
+        $headers = $this->signRequest('POST', $path, '');
 
-        return SumsubVerification::create([
-            'application_id' => $applicationType === 'visa' ? $application->id : null,
-            'eta_application_id' => $applicationType === 'eta' ? $application->id : null,
-            'applicant_id' => '', // Will be set when user starts verification
-            'external_user_id' => $externalUserId,
-            'verification_status' => 'pending',
-            'review_result' => 'init',
+        $response = $this->client()->withHeaders($headers)->post($this->baseUrl . $path);
+
+        if (!$response->successful()) {
+            $this->throwFromResponse($response, $applicant->sumsub_applicant_id);
+        }
+
+        $token = $response->json('token');
+        if (!$token) {
+            throw new SumsubApiException('Sumsub response missing token', 0, null, $response->status(), null, $applicant->sumsub_applicant_id);
+        }
+
+        Cache::put("sumsub_token:{$applicant->id}", $token, $ttlInSecs - 60);
+
+        return $token;
+    }
+
+    /**
+     * Reset applicant for re-do KYC.
+     * POST /resources/applicants/{applicantId}/reset
+     */
+    public function resetApplicant(string $sumsubApplicantId): void
+    {
+        $path = '/resources/applicants/' . rawurlencode($sumsubApplicantId) . '/reset';
+        $headers = $this->signRequest('POST', $path, '');
+
+        $response = $this->client()->withHeaders($headers)->post($this->baseUrl . $path);
+
+        if (!$response->successful()) {
+            $this->throwFromResponse($response, $sumsubApplicantId);
+        }
+
+        Log::info('Sumsub applicant reset', ['applicant_id' => $sumsubApplicantId]);
+    }
+
+    /**
+     * Sign request: returns headers X-App-Token, X-App-Access-Sig, X-App-Access-Ts.
+     * Signature = HMAC-SHA256(ts + method + path + body, secret_key).
+     */
+    private function signRequest(string $method, string $path, string $body = ''): array
+    {
+        $ts = (string) time();
+        $payload = $ts . strtoupper($method) . $path . $body;
+        $sig = hash_hmac('sha256', $payload, $this->secretKey);
+
+        return [
+            'Accept' => 'application/json',
+            'Content-Type' => 'application/json',
+            'X-App-Token' => $this->appToken,
+            'X-App-Access-Sig' => $sig,
+            'X-App-Access-Ts' => $ts,
+        ];
+    }
+
+    private function client(): PendingRequest
+    {
+        return Http::timeout($this->timeout)->retry(2, 500);
+    }
+
+    private function throwFromResponse(\Illuminate\Http\Client\Response $response, ?string $applicantId): void
+    {
+        $status = $response->status();
+        $body = $response->body();
+        Log::error('Sumsub API error', [
+            'status' => $status,
+            'applicant_id' => $applicantId,
+            'body_preview' => strlen($body) > 500 ? substr($body, 0, 500) . '...' : $body,
         ]);
+        throw SumsubApiException::fromResponse($status, $body, $applicantId);
     }
 
-    /**
-     * Update applicant ID when verification starts.
-     */
-    public function updateApplicantId(string $externalUserId, string $applicantId): bool
+    private function mapToKycStatus(?string $answer, array $data): KycStatus
     {
-        $verification = SumsubVerification::where('external_user_id', $externalUserId)->first();
-
-        if ($verification) {
-            $verification->update([
-                'applicant_id' => $applicantId,
-                'submitted_at' => now(),
-            ]);
-
-            // Update related application
-            $application = $verification->getRelatedApplication();
-            if ($application) {
-                $application->update([
-                    'sumsub_applicant_id' => $applicantId,
-                    'sumsub_verification_status' => 'pending',
-                ]);
-            }
-
-            return true;
+        if ($answer === null || $answer === '') {
+            $documentsRequired = $data['requiredIdDocsStatus'] ?? [];
+            $allSubmitted = !empty($data['idDocSetType']) || empty($documentsRequired);
+            return $allSubmitted ? KycStatus::UnderReview : KycStatus::NotStarted;
         }
-
-        return false;
-    }
-
-    /**
-     * Check if verification is required for application.
-     */
-    public function isVerificationRequired($application, string $applicationType = 'visa'): bool
-    {
-        if (!config('sumsub.enabled', false)) {
-            return false;
-        }
-
-        if ($applicationType === 'eta') {
-            return config('sumsub.eta_enabled', false);
-        }
-
-        // For visa applications, check tier
-        $requiredTiers = explode(',', config('sumsub.required_tiers', 'priority,express'));
-        $processingTier = $application->processing_tier ?? 'standard';
-
-        return in_array($processingTier, $requiredTiers);
-    }
-
-    /**
-     * Generate signature for Sumsub API.
-     */
-    protected function generateSignature(string $method, string $url, string $body, int $timestamp): string
-    {
-        $data = $timestamp . $method . $url . $body;
-        return hash_hmac('sha256', $data, $this->secretKey);
-    }
-
-    /**
-     * Generate external user ID.
-     */
-    protected function generateExternalUserId($application, string $applicationType): string
-    {
-        $prefix = $applicationType === 'eta' ? 'ETA' : 'VISA';
-        return $prefix . '_' . $application->id . '_' . time();
-    }
-
-    /**
-     * Map Sumsub verification status to our status.
-     */
-    protected function mapVerificationStatus(?string $type): string
-    {
-        return match($type) {
-            'applicantCreated' => 'pending',
-            'applicantPending' => 'queued',
-            'applicantReviewed' => 'completed',
-            'applicantActionReviewed' => 'completed',
-            default => 'pending',
+        $a = strtoupper((string) $answer);
+        return match ($a) {
+            'GREEN' => KycStatus::Approved,
+            'RED' => KycStatus::Rejected,
+            'YELLOW' => KycStatus::UnderReview,
+            'PENDING' => KycStatus::PendingDocuments,
+            default => KycStatus::NotStarted,
         };
     }
 
     /**
-     * Map Sumsub review result to our result.
+     * Map webhook reviewAnswer to KycStatus (for use by webhook job).
      */
-    protected function mapReviewResult(?string $reviewStatus): string
+    public function mapReviewAnswerToKycStatus(?string $reviewAnswer): KycStatus
     {
-        return match($reviewStatus) {
-            'completed' => 'approved',
-            'rejected' => 'rejected',
-            'pending' => 'pending',
-            default => 'init',
+        if ($reviewAnswer === null || $reviewAnswer === '') {
+            return KycStatus::PendingDocuments;
+        }
+        $a = strtoupper($reviewAnswer);
+        return match ($a) {
+            'GREEN' => KycStatus::Approved,
+            'RED' => KycStatus::Rejected,
+            'YELLOW' => KycStatus::UnderReview,
+            default => KycStatus::UnderReview,
         };
-    }
-
-    /**
-     * Update related application based on verification result.
-     */
-    protected function updateRelatedApplication(SumsubVerification $verification, ?string $reviewStatus): void
-    {
-        $application = $verification->getRelatedApplication();
-
-        if (!$application) {
-            return;
-        }
-
-        $application->update([
-            'sumsub_verification_status' => $verification->verification_status,
-            'sumsub_review_result' => $verification->review_result,
-            'sumsub_verified_at' => $verification->reviewed_at,
-        ]);
-
-        // If approved, continue with application processing
-        if ($reviewStatus === 'completed' && $verification->review_result === 'approved') {
-            $this->processApprovedVerification($application, $verification);
-        }
-
-        // If rejected, update application status
-        if ($verification->review_result === 'rejected') {
-            $this->processRejectedVerification($application, $verification);
-        }
-    }
-
-    /**
-     * Process approved verification.
-     */
-    protected function processApprovedVerification($application, SumsubVerification $verification): void
-    {
-        // For ETA applications, continue with screening
-        if ($application instanceof EtaApplication) {
-            // Continue with ETA screening process
-            $screeningService = app(EtaScreeningService::class);
-            $screeningService->performScreening($application);
-        }
-
-        // For visa applications, continue with routing
-        if ($application instanceof Application) {
-            // Continue with visa processing workflow
-            // This could trigger routing, officer assignment, etc.
-        }
-
-        Log::info('Sumsub verification approved, continuing processing', [
-            'verification_id' => $verification->id,
-            'application_type' => get_class($application),
-            'application_id' => $application->id,
-        ]);
-    }
-
-    /**
-     * Process rejected verification.
-     */
-    protected function processRejectedVerification($application, SumsubVerification $verification): void
-    {
-        // For ETA applications, set status to flagged
-        if ($application instanceof EtaApplication) {
-            $application->update([
-                'status' => 'flagged',
-                'screening_notes' => json_encode(['Sumsub verification rejected']),
-            ]);
-        }
-
-        // For visa applications, flag for manual review
-        if ($application instanceof Application) {
-            $application->update([
-                'status' => 'flagged_for_review',
-            ]);
-        }
-
-        Log::info('Sumsub verification rejected, flagging application', [
-            'verification_id' => $verification->id,
-            'application_type' => get_class($application),
-            'application_id' => $application->id,
-        ]);
     }
 }

@@ -389,11 +389,11 @@ class AdvancedRoutingService
         $routing = $this->determineRouting($application);
 
         if ($routing['agency'] !== $previousAgency) {
-            $application->update([
+            $application->forceFill([
                 'assigned_agency' => $routing['agency'],
-                'assigned_officer_id' => null, // Clear assignment on re-route
+                'assigned_officer_id' => null,
                 'sla_deadline' => now()->addHours($routing['sla_hours']),
-            ]);
+            ])->save();
 
             $application->statusHistory()->create([
                 'to_status' => $application->status,

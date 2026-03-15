@@ -4,24 +4,36 @@ namespace App\Jobs;
 
 use App\Models\Application;
 use App\Services\EVisaPdfService;
-use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Foundation\Bus\Dispatchable;
-use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
-class GenerateEVisaPdf implements ShouldQueue
+class GenerateEVisaPdf extends CriticalJob implements ShouldBeUnique
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use SerializesModels;
 
-    public int $tries = 3;
-    public int $backoff = 30;
+    public int $uniqueFor = 3600;
 
     public function __construct(
         public Application $application,
     ) {
-        $this->onQueue('pdf');
+        $this->onQueue('critical');
+    }
+
+    public function uniqueId(): string
+    {
+        return 'evisa:' . $this->application->id;
+    }
+
+    protected function getApplicationId(): ?int
+    {
+        return $this->application->id;
+    }
+
+    protected function getApplication(): ?Application
+    {
+        return $this->application;
     }
 
     public function handle(EVisaPdfService $pdfService): void
@@ -36,11 +48,14 @@ class GenerateEVisaPdf implements ShouldQueue
             $this->application,
             'application_approved',
             ['evisa_path' => $path]
-        );
+        )->onQueue('default');
     }
 
-    public function failed(\Throwable $exception): void
+    protected function handleApplicationFailure(Application $application, Throwable $exception): void
     {
-        Log::error("Failed to generate eVisa PDF for {$this->application->reference_number}: {$exception->getMessage()}");
+        Log::error("eVisa PDF generation permanently failed for application {$application->id}", [
+            'exception' => $exception->getMessage(),
+        ]);
+        // Optionally update application or notify officer for manual PDF generation
     }
 }

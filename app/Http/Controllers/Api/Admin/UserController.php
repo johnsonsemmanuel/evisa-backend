@@ -4,13 +4,18 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\LoginAttemptService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rules\Password;
 
 class UserController extends Controller
 {
+    public function __construct(
+        protected LoginAttemptService $loginAttemptService
+    ) {}
     /**
      * List all system users with filters.
      */
@@ -77,11 +82,14 @@ class UserController extends Controller
             'last_name'  => $validated['last_name'],
             'email'      => $validated['email'],
             'password'   => Hash::make($validated['password']),
-            'role'       => $validated['role'],
-            'agency'     => $validated['agency'],
             'phone'      => $validated['phone'] ?? null,
             'locale'     => $validated['locale'] ?? 'en',
         ]);
+        $user->forceFill([
+            'role'      => $validated['role'],
+            'agency'    => $validated['agency'],
+            'is_active' => true,
+        ])->save();
 
         return response()->json([
             'message' => __('admin.user_created'),
@@ -104,7 +112,15 @@ class UserController extends Controller
             'locale'     => 'sometimes|in:en,fr',
         ]);
 
-        $user->update($validated);
+        $safeFields = collect($validated)->only(['first_name', 'last_name', 'email', 'locale'])->toArray();
+        $protectedFields = collect($validated)->only(['role', 'agency', 'is_active'])->toArray();
+
+        if (!empty($safeFields)) {
+            $user->update($safeFields);
+        }
+        if (!empty($protectedFields)) {
+            $user->forceFill($protectedFields)->save();
+        }
 
         return response()->json([
             'message' => __('admin.user_updated'),
@@ -117,7 +133,7 @@ class UserController extends Controller
      */
     public function deactivate(User $user): JsonResponse
     {
-        $user->update(['is_active' => false]);
+        $user->forceFill(['is_active' => false])->save();
 
         return response()->json([
             'message' => __('admin.user_deactivated'),
@@ -129,10 +145,57 @@ class UserController extends Controller
      */
     public function activate(User $user): JsonResponse
     {
-        $user->update(['is_active' => true]);
+        $user->forceFill(['is_active' => true])->save();
 
         return response()->json([
             'message' => __('admin.user_activated'),
+        ]);
+    }
+
+    /**
+     * Unlock a user account that was locked due to brute force protection.
+     * Only accessible by admin and super_admin roles.
+     */
+    public function unlockAccount(User $user, Request $request): JsonResponse
+    {
+        // Check if account is actually locked
+        if (!$this->loginAttemptService->isPermanentlyLocked($user->email)) {
+            return response()->json([
+                'message' => 'Account is not currently locked',
+                'user' => [
+                    'email' => $user->email,
+                    'id' => $user->id,
+                ],
+            ], 400);
+        }
+
+        // Unlock the account
+        $unlocked = $this->loginAttemptService->unlockAccount($user->email);
+
+        if (!$unlocked) {
+            return response()->json([
+                'message' => 'Failed to unlock account. Please try again.',
+            ], 500);
+        }
+
+        // Create audit log entry
+        Log::info('Account unlocked by admin', [
+            'unlocked_user_id' => $user->id,
+            'unlocked_user_email' => $user->email,
+            'admin_user_id' => $request->user()->id,
+            'admin_user_email' => $request->user()->email,
+            'admin_ip' => $request->ip(),
+            'timestamp' => now()->toISOString(),
+        ]);
+
+        return response()->json([
+            'message' => 'Account successfully unlocked',
+            'user' => [
+                'email' => $user->email,
+                'id' => $user->id,
+                'unlocked_at' => now()->toISOString(),
+                'unlocked_by' => $request->user()->email,
+            ],
         ]);
     }
 }

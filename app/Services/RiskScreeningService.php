@@ -41,10 +41,10 @@ class RiskScreeningService
      */
     public function markCleared(Application $application, string $notes = null): Application
     {
-        $application->update([
+        $application->forceFill([
             'risk_screening_status' => 'cleared',
             'risk_screening_notes' => $notes ?? 'Manual screening completed. No flags.',
-        ]);
+        ])->save();
 
         Log::info("Application {$application->reference_number} cleared risk screening");
 
@@ -56,10 +56,10 @@ class RiskScreeningService
      */
     public function markFlagged(Application $application, string $reason): Application
     {
-        $application->update([
+        $application->forceFill([
             'risk_screening_status' => 'flagged',
             'risk_screening_notes' => $reason,
-        ]);
+        ])->save();
 
         Log::warning("Application {$application->reference_number} flagged: {$reason}");
 
@@ -119,7 +119,7 @@ class RiskScreeningService
      */
     public function performRiskAssessment(Application $application): RiskAssessment
     {
-        $application->update(['risk_screening_status' => 'in_progress']);
+        $application->forceFill(['risk_screening_status' => 'in_progress'])->save();
 
         $factors = [];
         $riskScore = 0;
@@ -210,13 +210,13 @@ class RiskScreeningService
         );
 
         // Update application with risk info
-        $application->update([
+        $application->forceFill([
             'risk_screening_status' => $hasWatchlistMatch || $riskLevel === 'critical' ? 'flagged' : 'cleared',
             'risk_score' => $riskScore,
             'risk_level' => $riskLevel,
             'watchlist_flagged' => $hasWatchlistMatch,
             'risk_assessed_at' => now(),
-        ]);
+        ])->save();
 
         Log::info("Risk assessment completed for {$application->reference_number}: score={$riskScore}, level={$riskLevel}");
 

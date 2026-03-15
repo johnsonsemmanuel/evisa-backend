@@ -12,10 +12,18 @@ return new class extends Migration
         // For SQLite, we need to recreate the column
         // First, add a temporary column
         Schema::table('applications', function (Blueprint $table) {
-            $table->string('processing_tier')->nullable()->after('status');
-            $table->string('risk_screening_status')->nullable()->after('assigned_officer_id');
-            $table->text('risk_screening_notes')->nullable()->after('risk_screening_status');
-            $table->string('evisa_qr_code')->nullable()->after('evisa_file_path');
+            if (!Schema::hasColumn('applications', 'processing_tier')) {
+                $table->string('processing_tier')->nullable()->after('status');
+            }
+            if (!Schema::hasColumn('applications', 'risk_screening_status')) {
+                $table->string('risk_screening_status')->nullable()->after('assigned_officer_id');
+            }
+            if (!Schema::hasColumn('applications', 'risk_screening_notes')) {
+                $table->text('risk_screening_notes')->nullable()->after('risk_screening_status');
+            }
+            if (!Schema::hasColumn('applications', 'evisa_qr_code')) {
+                $table->string('evisa_qr_code')->nullable()->after('evisa_file_path');
+            }
         });
 
         // Migrate existing tier data
@@ -24,7 +32,9 @@ return new class extends Migration
 
         // Update tier_rules table
         Schema::table('tier_rules', function (Blueprint $table) {
-            $table->string('processing_tier')->nullable()->after('tier');
+            if (!Schema::hasColumn('tier_rules', 'processing_tier')) {
+                $table->string('processing_tier')->nullable()->after('tier');
+            }
         });
 
         // Migrate tier_rules
@@ -34,12 +44,39 @@ return new class extends Migration
 
     public function down(): void
     {
+        // FIXED: Properly reverse data migration
+        
+        // First, restore the original tier data if processing_tier exists
+        if (Schema::hasColumn('applications', 'processing_tier')) {
+            DB::table('applications')->where('processing_tier', 'fast_track')->update(['tier' => 'tier_1']);
+            DB::table('applications')->where('processing_tier', 'regular')->update(['tier' => 'tier_2']);
+        }
+
+        if (Schema::hasColumn('tier_rules', 'processing_tier')) {
+            DB::table('tier_rules')->where('processing_tier', 'fast_track')->update(['tier' => 'tier_1']);
+            DB::table('tier_rules')->where('processing_tier', 'regular')->update(['tier' => 'tier_2']);
+        }
+
+        // Then drop the columns
         Schema::table('applications', function (Blueprint $table) {
-            $table->dropColumn(['processing_tier', 'risk_screening_status', 'risk_screening_notes', 'evisa_qr_code']);
+            if (Schema::hasColumn('applications', 'processing_tier')) {
+                $table->dropColumn('processing_tier');
+            }
+            if (Schema::hasColumn('applications', 'risk_screening_status')) {
+                $table->dropColumn('risk_screening_status');
+            }
+            if (Schema::hasColumn('applications', 'risk_screening_notes')) {
+                $table->dropColumn('risk_screening_notes');
+            }
+            if (Schema::hasColumn('applications', 'evisa_qr_code')) {
+                $table->dropColumn('evisa_qr_code');
+            }
         });
 
         Schema::table('tier_rules', function (Blueprint $table) {
-            $table->dropColumn('processing_tier');
+            if (Schema::hasColumn('tier_rules', 'processing_tier')) {
+                $table->dropColumn('processing_tier');
+            }
         });
     }
 };

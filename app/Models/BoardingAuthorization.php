@@ -35,14 +35,14 @@ class BoardingAuthorization extends Model
         'verification_timestamp',
         'expiry_timestamp',
         'verified_by_user_id',
+        'used_at',
+        'used_by_user_id',
     ];
 
-    /**
-     * The attributes that should be cast.
-     */
     protected $casts = [
         'verification_timestamp' => 'datetime',
         'expiry_timestamp' => 'datetime',
+        'used_at' => 'datetime',
     ];
 
     /**
@@ -67,12 +67,14 @@ class BoardingAuthorization extends Model
         return $this->expiry_timestamp->isPast();
     }
 
-    /**
-     * Check if the BAC is valid (not expired).
-     */
+    public function isUsed(): bool
+    {
+        return $this->used_at !== null;
+    }
+
     public function isValid(): bool
     {
-        return !$this->isExpired();
+        return !$this->isExpired() && !$this->isUsed();
     }
 
     /**

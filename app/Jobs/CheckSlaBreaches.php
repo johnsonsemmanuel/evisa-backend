@@ -2,31 +2,21 @@
 
 namespace App\Jobs;
 
-use App\Models\Application;
 use App\Services\SlaService;
-use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Foundation\Bus\Dispatchable;
-use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 
-class CheckSlaBreaches implements ShouldQueue
+class CheckSlaBreaches extends BaseJob
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use SerializesModels;
 
     public function __construct()
     {
-        $this->onQueue('sla');
+        $this->onQueue('low');
     }
 
-    /**
-     * Scheduled job: checks for approaching and breached SLAs.
-     * Should be run every 15 minutes via scheduler.
-     */
     public function handle(SlaService $slaService): void
     {
-        // Notify on approaching breaches (< 6 hours remaining)
         $approaching = $slaService->getApproachingBreach(6);
         foreach ($approaching as $application) {
             Log::warning("SLA approaching breach: {$application->reference_number} — {$application->slaHoursRemaining()}h remaining");
@@ -35,10 +25,9 @@ class CheckSlaBreaches implements ShouldQueue
                 $application,
                 'sla_warning',
                 ['hours_remaining' => round($application->slaHoursRemaining(), 1)]
-            );
+            )->onQueue('default');
         }
 
-        // Log breached applications
         $breached = $slaService->getBreached();
         foreach ($breached as $application) {
             Log::error("SLA BREACHED: {$application->reference_number}");
@@ -47,7 +36,7 @@ class CheckSlaBreaches implements ShouldQueue
                 $application,
                 'sla_breached',
                 ['breached_by_hours' => round(abs($application->slaHoursRemaining()), 1)]
-            );
+            )->onQueue('default');
         }
 
         Log::info("SLA check completed: {$approaching->count()} approaching, {$breached->count()} breached");

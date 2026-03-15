@@ -4,28 +4,31 @@ namespace App\Jobs;
 
 use App\Models\Application;
 use App\Models\User;
-use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Foundation\Bus\Dispatchable;
-use Illuminate\Queue\InteractsWithQueue;
+use App\Notifications\ApplicationNotification;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Facades\Notification;
 
-class SendNotification implements ShouldQueue
+class SendNotification extends BaseJob
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
-
-    public int $tries = 3;
-    public int $backoff = 15;
+    use SerializesModels;
 
     public function __construct(
         public Application $application,
         public string $type,
         public array $data = [],
     ) {
-        $this->onQueue('notifications');
+        $this->onQueue('default');
+    }
+
+    protected function getApplicationId(): ?int
+    {
+        return $this->application->id;
+    }
+
+    protected function getApplication(): ?Application
+    {
+        return $this->application;
     }
 
     public function handle(): void
@@ -42,7 +45,7 @@ class SendNotification implements ShouldQueue
                 break;
 
             case 'status_changed':
-                $statusLabel = $this->data['status'] ?? $this->application->status;
+                $statusLabel = $this->data['status'] ?? $this->application->status?->value ?? $this->application->status;
                 $this->notifyApplicant("Your application status has been updated to: {$statusLabel}");
                 break;
 
@@ -81,28 +84,20 @@ class SendNotification implements ShouldQueue
         }
     }
 
-    /**
-     * Send notification to the applicant who owns this application.
-     */
     protected function notifyApplicant(string $message): void
     {
         $user = $this->application->user;
         if ($user) {
-            // Store as database notification
-            $user->notify(new \App\Notifications\ApplicationNotification(
+            $user->notify(new ApplicationNotification(
                 $this->application,
                 $this->type,
                 $message,
                 $this->data
             ));
-
             Log::info("Notified applicant {$user->email}: {$message}");
         }
     }
 
-    /**
-     * Send an actual email to the applicant using a blade template.
-     */
     protected function sendEmail(string $view): void
     {
         $user = $this->application->user;
@@ -115,7 +110,7 @@ class SendNotification implements ShouldQueue
                 'applicant_name' => $user->full_name ?? ($user->first_name . ' ' . $user->last_name),
                 'reference_number' => $this->application->reference_number,
                 'visa_type' => $this->application->visaType?->name ?? 'Visa',
-                'status' => $this->application->status,
+                'status' => $this->application->status?->value ?? $this->application->status,
                 'application' => $this->application,
             ];
 
@@ -128,12 +123,10 @@ class SendNotification implements ShouldQueue
             Log::info("Email sent to {$user->email} for [{$this->type}]");
         } catch (\Throwable $e) {
             Log::error("Failed to send email to {$user->email}: {$e->getMessage()}");
+            throw $e;
         }
     }
 
-    /**
-     * Get email subject based on notification type.
-     */
     protected function getEmailSubject(): string
     {
         return match ($this->type) {
@@ -146,14 +139,11 @@ class SendNotification implements ShouldQueue
         };
     }
 
-    /**
-     * Send notification to all officers in the assigned agency.
-     */
     protected function notifyAgencyOfficers(string $message): void
     {
         $agency = $this->application->assigned_agency;
         $roleMap = ['gis' => 'gis_officer', 'mfa' => 'mfa_reviewer'];
-        $role = $roleMap[$agency] ?? null;
+        $role = $roleMap[$agency->value ?? $agency] ?? null;
 
         if (!$role) {
             return;
@@ -162,7 +152,7 @@ class SendNotification implements ShouldQueue
         $officers = User::where('role', $role)->where('is_active', true)->get();
 
         foreach ($officers as $officer) {
-            $officer->notify(new \App\Notifications\ApplicationNotification(
+            $officer->notify(new ApplicationNotification(
                 $this->application,
                 $this->type,
                 $message,
@@ -171,10 +161,5 @@ class SendNotification implements ShouldQueue
         }
 
         Log::info("Notified {$officers->count()} {$agency} officers: {$message}");
-    }
-
-    public function failed(\Throwable $exception): void
-    {
-        Log::error("Failed to send notification [{$this->type}] for {$this->application->reference_number}: {$exception->getMessage()}");
     }
 }

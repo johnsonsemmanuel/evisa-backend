@@ -4,23 +4,28 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\VisaType;
+use App\Services\VisaTypeService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
 class VisaTypeController extends Controller
 {
+    public function __construct(
+        protected VisaTypeService $visaTypeService
+    ) {}
+
     /**
-     * List all visa types.
+     * List all visa types (cached).
      */
     public function index(): JsonResponse
     {
-        $visaTypes = VisaType::orderBy('name')->get();
+        $visaTypes = $this->visaTypeService->getAllVisaTypes();
         return response()->json($visaTypes);
     }
 
     /**
-     * Create a new visa type.
+     * Create a new visa type (busts cache).
      */
     public function store(Request $request): JsonResponse
     {
@@ -42,7 +47,7 @@ class VisaTypeController extends Controller
             $validated['slug'] = Str::slug($validated['name']);
         }
 
-        $visaType = VisaType::create($validated);
+        $visaType = $this->visaTypeService->createVisaType($validated);
 
         return response()->json([
             'message' => 'Visa type created successfully',
@@ -59,7 +64,7 @@ class VisaTypeController extends Controller
     }
 
     /**
-     * Update a visa type.
+     * Update a visa type (busts cache).
      */
     public function update(Request $request, VisaType $visaType): JsonResponse
     {
@@ -76,16 +81,16 @@ class VisaTypeController extends Controller
             'is_active' => 'boolean',
         ]);
 
-        $visaType->update($validated);
+        $visaType = $this->visaTypeService->updateVisaType($visaType, $validated);
 
         return response()->json([
             'message' => 'Visa type updated successfully',
-            'visa_type' => $visaType->fresh(),
+            'visa_type' => $visaType,
         ]);
     }
 
     /**
-     * Delete a visa type.
+     * Delete a visa type (busts cache).
      */
     public function destroy(VisaType $visaType): JsonResponse
     {
@@ -96,7 +101,7 @@ class VisaTypeController extends Controller
             ], 422);
         }
 
-        $visaType->delete();
+        $this->visaTypeService->deleteVisaType($visaType);
 
         return response()->json([
             'message' => 'Visa type deleted successfully',

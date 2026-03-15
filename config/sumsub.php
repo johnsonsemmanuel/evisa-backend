@@ -37,6 +37,8 @@ return [
 
     'webhook_secret' => env('SUMSUB_WEBHOOK_SECRET'),
 
+    'kyc_level' => env('SUMSUB_KYC_LEVEL', 'basic-kyc-level'),
+
     /*
     |--------------------------------------------------------------------------
     | Verification Requirements

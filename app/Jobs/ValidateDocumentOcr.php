@@ -3,101 +3,86 @@
 namespace App\Jobs;
 
 use App\Models\ApplicationDocument;
-use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Foundation\Bus\Dispatchable;
-use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Throwable;
 
-class ValidateDocumentOcr implements ShouldQueue
+class ValidateDocumentOcr extends BaseJob
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
-
-    public int $tries = 2;
-    public int $backoff = 60;
+    use SerializesModels;
 
     public function __construct(
         public ApplicationDocument $document,
     ) {
-        $this->onQueue('ocr');
+        $this->onQueue('default');
     }
 
-    /**
-     * Async OCR validation for uploaded documents.
-     * In production, this would call an external OCR service API.
-     */
+    protected function getApplicationId(): ?int
+    {
+        return $this->document->application?->id;
+    }
+
+    protected function getApplication(): ?\App\Models\Application
+    {
+        return $this->document->application;
+    }
+
     public function handle(): void
     {
         Log::info("Starting OCR validation for document {$this->document->id} ({$this->document->document_type})");
 
         $this->document->update(['ocr_status' => 'processing']);
 
-        try {
-            // Check file exists
-            if (!Storage::disk('secure')->exists($this->document->stored_path)) {
-                throw new \RuntimeException('Document file not found in storage.');
-            }
+        $path = $this->document->stored_path;
+        if (!Storage::disk('secure')->exists($path)) {
+            throw new \RuntimeException('Document file not found in storage.');
+        }
 
-            // Placeholder: In production, send file to OCR API (e.g., Google Vision, AWS Textract)
-            // $ocrResult = $this->callOcrService($this->document->stored_path);
-            $ocrResult = $this->simulateOcr();
+        $ocrResult = $this->simulateOcr();
 
-            if ($ocrResult['readable']) {
-                $this->document->update([
-                    'ocr_status' => 'passed',
-                    'ocr_result' => json_encode($ocrResult),
-                ]);
-                Log::info("OCR passed for document {$this->document->id}");
-            } else {
-                $this->document->update([
-                    'ocr_status'          => 'failed',
-                    'ocr_result'          => json_encode($ocrResult),
-                    'verification_status' => 'reupload_requested',
-                    'rejection_reason'    => 'Document is not readable. Please re-upload a clearer copy.',
-                ]);
+        if ($ocrResult['readable']) {
+            $this->document->update([
+                'ocr_status' => 'passed',
+                'ocr_result' => json_encode($ocrResult),
+            ]);
+            Log::info("OCR passed for document {$this->document->id}");
+        } else {
+            $this->document->update([
+                'ocr_status' => 'failed',
+                'ocr_result' => json_encode($ocrResult),
+                'verification_status' => 'reupload_requested',
+                'rejection_reason' => 'Document is not readable. Please re-upload a clearer copy.',
+            ]);
 
-                // Notify applicant to re-upload
-                $application = $this->document->application;
+            $application = $this->document->application;
+            if ($application) {
                 SendNotification::dispatch(
                     $application,
                     'document_reupload_required',
                     [
                         'document_type' => $this->document->document_type,
-                        'reason'        => 'Document failed readability check.',
+                        'reason' => 'Document failed readability check.',
                     ]
-                );
-
-                Log::warning("OCR failed for document {$this->document->id}: not readable");
+                )->onQueue('default');
             }
-        } catch (\Throwable $e) {
-            $this->document->update([
-                'ocr_status' => 'failed',
-                'ocr_result' => json_encode(['error' => $e->getMessage()]),
-            ]);
-            Log::error("OCR error for document {$this->document->id}: {$e->getMessage()}");
-            throw $e;
+
+            Log::warning("OCR failed for document {$this->document->id}: not readable");
         }
     }
 
-    /**
-     * Simulate OCR result for development/testing.
-     */
     private function simulateOcr(): array
     {
         return [
-            'readable'   => true,
+            'readable' => true,
             'confidence' => 0.95,
-            'text'       => 'Simulated OCR text output',
-            'provider'   => 'simulation',
+            'text' => 'Simulated OCR text output',
+            'provider' => 'simulation',
         ];
     }
 
-    public function failed(\Throwable $exception): void
+    protected function handleApplicationFailure(\App\Models\Application $application, Throwable $exception): void
     {
-        Log::error("OCR job permanently failed for document {$this->document->id}: {$exception->getMessage()}");
-
         $this->document->update([
             'ocr_status' => 'skipped',
             'ocr_result' => json_encode(['error' => 'OCR processing failed after retries']),

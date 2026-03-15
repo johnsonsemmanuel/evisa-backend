@@ -24,6 +24,10 @@ echo "Setting up Laravel directories..."
 mkdir -p storage/framework/{sessions,views,cache,testing} storage/logs bootstrap/cache
 chmod -R a+rw storage
 
+# Run database migrations (production safe with --force flag)
+echo "Running database migrations..."
+php artisan migrate --force
+
 # Cache Laravel configuration
 echo "Caching Laravel configuration..."
 php artisan config:cache

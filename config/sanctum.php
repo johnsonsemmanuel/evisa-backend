@@ -42,12 +42,24 @@ return [
     |--------------------------------------------------------------------------
     |
     | This value controls the number of minutes until an issued token will be
-    | considered expired. This will override any values set in the token's
-    | "expires_at" attribute, but first-party sessions are not affected.
+    | considered expired. Government security policy requires token expiration.
+    | Different roles have different expiration times based on security needs.
     |
     */
 
-    'expiration' => env('SANCTUM_TOKEN_EXPIRATION', 480), // 8 hours - extended for development
+    'expiration' => env('SANCTUM_TOKEN_EXPIRY_MINUTES', 480), // 8 hours default for applicants
+    
+    /*
+    |--------------------------------------------------------------------------
+    | Officer Token Expiration Minutes
+    |--------------------------------------------------------------------------
+    |
+    | Officers handle sensitive government data and require shorter token expiry.
+    | This provides enhanced security for privileged accounts.
+    |
+    */
+    
+    'officer_expiration' => env('SANCTUM_OFFICER_TOKEN_EXPIRY_MINUTES', 240), // 4 hours for officers
 
     /*
     |--------------------------------------------------------------------------

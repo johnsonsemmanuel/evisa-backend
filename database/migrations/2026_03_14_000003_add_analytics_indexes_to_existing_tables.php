@@ -69,19 +69,13 @@ return new class extends Migration
 
     /**
      * Reverse the migrations.
+     * 
+     * Note: We don't drop these analytics indexes on rollback as they are
+     * performance optimizations that don't affect data integrity.
      */
     public function down(): void
     {
-        Schema::table('applications', function (Blueprint $table) {
-            $table->dropIndex('idx_applications_visa_type_id');
-            $table->dropIndex('idx_applications_tier');
-            $table->dropIndex('idx_applications_status_created');
-            $table->dropIndex('idx_applications_visa_created');
-        });
-
-        Schema::table('payments', function (Blueprint $table) {
-            $table->dropIndex('idx_payments_paid_at');
-            $table->dropIndex('idx_payments_status_paid');
-        });
+        // Analytics indexes are kept for performance
+        // They don't affect data integrity so no need to drop on rollback
     }
 };

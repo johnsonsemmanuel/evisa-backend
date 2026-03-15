@@ -229,31 +229,23 @@ class ApplicationRoutingService
         return $application;
     }
 
-    /**
-     * Mark application as approved.
-     */
     public function approve(Application $application): Application
     {
-        $application->status = 'approved';
+        $appService = app(ApplicationService::class);
+        $appService->changeStatus($application, 'approved', 'Approved');
         $application->current_queue = 'completed';
         $application->approval_completed_at = now();
-        $application->decided_at = now();
         $application->save();
-
         return $application;
     }
 
-    /**
-     * Mark application as denied.
-     */
     public function deny(Application $application): Application
     {
-        $application->status = 'denied';
+        $appService = app(ApplicationService::class);
+        $appService->changeStatus($application, 'denied', 'Denied');
         $application->current_queue = 'completed';
         $application->approval_completed_at = now();
-        $application->decided_at = now();
         $application->save();
-
         return $application;
     }
 

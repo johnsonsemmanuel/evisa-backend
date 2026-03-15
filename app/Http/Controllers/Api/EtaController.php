@@ -114,16 +114,12 @@ class EtaController extends Controller
         $eligibilityService = app(\App\Services\EtaEligibilityService::class);
         $authType = $eligibilityService->getAuthorizationType($nationality);
 
-        // Get ETA types where nationality is eligible
+        // FIX: Use database query instead of loading all and filtering in PHP
+        // Note: This assumes eligible_nationalities is stored as JSON array
         $etaTypes = VisaType::where('category', 'eta')
             ->where('is_active', true)
-            ->get()
-            ->filter(function ($type) use ($nationality) {
-                if (empty($type->eligible_nationalities)) {
-                    return false; // ETA requires specific nationalities
-                }
-                return in_array($nationality, $type->eligible_nationalities);
-            });
+            ->whereRaw('JSON_CONTAINS(eligible_nationalities, ?)', [json_encode($nationality)])
+            ->get();
 
         // Check if Sumsub verification is available
         $sumsubEnabled = config('sumsub.enabled', false) && config('sumsub.eta_enabled', false);

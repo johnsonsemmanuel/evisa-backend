@@ -217,7 +217,15 @@ class BorderVerificationService
         }
 
         if ($bac->isExpired()) {
-            return null;
+            return ['valid' => false, 'reason' => 'expired'];
+        }
+
+        if ($bac->isUsed()) {
+            return [
+                'valid' => false,
+                'reason' => 'already_used',
+                'used_at' => $bac->used_at->format('Y-m-d H:i:s'),
+            ];
         }
 
         try {
@@ -241,17 +249,43 @@ class BorderVerificationService
     }
 
     /**
+     * Consume a BAC, marking it as used. Returns false if already used or invalid.
+     */
+    public function consumeBac(string $code, int $userId): bool
+    {
+        $bac = BoardingAuthorization::where('authorization_code', $code)->first();
+
+        if (!$bac || $bac->isExpired() || $bac->isUsed()) {
+            return false;
+        }
+
+        $bac->used_at = now();
+        $bac->used_by_user_id = $userId;
+        $bac->save();
+
+        $this->createAuditLog('bac_consumed', [
+            'authorization_code' => $code,
+            'used_by' => $userId,
+        ]);
+
+        return true;
+    }
+
+    /**
      * Create audit log entry.
      */
     protected function createAuditLog(string $action, array $data): void
     {
         try {
+            $now = now();
             AuditLog::create([
                 'action' => $action,
                 'user_id' => auth()->id(),
                 'data' => json_encode($data),
                 'ip_address' => request()->ip(),
                 'user_agent' => request()->userAgent(),
+                'created_at' => $now,
+                'updated_at' => $now,
             ]);
         } catch (\Exception $e) {
             Log::error('Failed to create audit log', [

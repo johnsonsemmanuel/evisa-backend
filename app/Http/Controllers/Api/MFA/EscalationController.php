@@ -148,11 +148,11 @@ class EscalationController extends Controller
             return response()->json(['message' => __('case.invalid_status_for_approval')], 422);
         }
 
-        $application->update([
+        $application->forceFill([
             'reviewed_by_id' => $request->user()->id,
             'reviewed_at' => now(),
             'current_queue' => 'approval_queue',
-        ]);
+        ])->save();
 
         $this->applicationService->changeStatus(
             $application, 
@@ -176,13 +176,19 @@ class EscalationController extends Controller
             return response()->json(['message' => 'You do not have permission to approve applications'], 403);
         }
 
+        if ($application->reviewed_by_id === $request->user()->id
+            || $application->reviewing_officer_id === $request->user()->id) {
+            return response()->json([
+                'message' => 'You cannot approve an application you reviewed.',
+            ], 403);
+        }
+
         $validated = $request->validate([
             'notes' => 'nullable|string|max:2000',
         ]);
 
         if ($denied = $this->ensureMissionAccess($request, $application)) return $denied;
 
-        // Only pending_approval applications can be approved (two-step enforcement)
         if ($application->status !== 'pending_approval') {
             return response()->json(['message' => __('case.invalid_status_for_approval')], 422);
         }
@@ -323,7 +329,7 @@ class EscalationController extends Controller
     {
         if ($denied = $this->ensureMissionAccess($request, $application)) return $denied;
 
-        $application->update(['assigned_officer_id' => $request->user()->id]);
+        $application->forceFill(['assigned_officer_id' => $request->user()->id])->save();
 
         return response()->json([
             'message'     => __('case.assigned'),
@@ -500,6 +506,10 @@ class EscalationController extends Controller
      */
     public function revertDecision(Request $request, Application $application): JsonResponse
     {
+        if (!$request->user()->canApproveApplications()) {
+            return response()->json(['message' => 'Only approvers can revert decisions'], 403);
+        }
+
         if ($denied = $this->ensureMissionAccess($request, $application)) return $denied;
 
         if (!in_array($application->status, ['approved', 'denied', 'pending_approval'])) {

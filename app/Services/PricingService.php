@@ -8,25 +8,18 @@ use App\Models\ServiceTier;
 
 /**
  * Unified Pricing Service
- * 
- * Implements the official pricing specification (Section 5):
- * - Base Price: $260 (uniform for all visa types)
- * - Entry Multipliers: Single = 1.0, Multiple = 1.8
- * - Processing Tier Multipliers (E-Visa only):
- *   - Standard = 1.0 (3-5 business days)
- *   - Priority = 1.3 (within 48 hours)
- *   - Express = 1.7 (within 5 hours)
- * 
+ *
+ * All monetary results are in pesewas (integer) for data integrity.
+ * Base Price: $260 = 26000 pesewas.
+ *
  * Formulas:
- * - E-Visa: Base Price × Entry Multiplier × Processing Tier Multiplier
+ * - E-Visa: Base Price × Entry Multiplier × Processing Tier Multiplier + additional_fee (pesewas)
  * - Regular Visa: Base Price × Entry Multiplier (always Standard tier)
  */
 class PricingService
 {
-    /**
-     * Base price for all visa types (specification requirement)
-     */
-    const BASE_PRICE = 260.00;
+    /** Base price in pesewas (26000 = GHS/USD 260.00) */
+    const BASE_PRICE_PESEWAS = 26000;
 
     /**
      * Entry type multipliers
@@ -68,42 +61,39 @@ class PricingService
         $entryType = strtolower($entryType);
         $serviceTierCode = strtolower($serviceTierCode);
 
-        // Step 1: Base Price (always $260)
-        $basePrice = self::BASE_PRICE;
+        // Step 1: Base in pesewas
+        $basePesewas = self::BASE_PRICE_PESEWAS;
 
         // Step 2: Entry Type Multiplier
         $entryMultiplier = $this->getEntryMultiplier($entryType);
 
-        // Step 3: Get Service Tier from database
+        // Step 3: Get Service Tier (additional_fee is stored in pesewas)
         $serviceTier = ServiceTier::where('code', $serviceTierCode)->first();
-        
-        // Step 4: Processing Tier Multiplier and Additional Fee (E-Visa only)
         $tierMultiplier = 1.0;
-        $additionalFee = 0;
-        
+        $additionalFeePesewas = 0;
+
         if ($visaChannel === 'e-visa' && $serviceTier) {
             $tierMultiplier = $serviceTier->fee_multiplier;
-            $additionalFee = $serviceTier->additional_fee;
+            $additionalFeePesewas = (int) $serviceTier->additional_fee;
         }
 
-        // Calculate total
-        $total = ($basePrice * $entryMultiplier * $tierMultiplier) + $additionalFee;
-
-        // Calculate breakdown
-        $entryFee = $basePrice * $entryMultiplier;
-        $processingFee = ($entryFee * $tierMultiplier) - $entryFee + $additionalFee;
+        // All in pesewas (integer)
+        $entryFeePesewas = (int) round($basePesewas * $entryMultiplier);
+        $totalPesewas = (int) round($entryFeePesewas * $tierMultiplier) + $additionalFeePesewas;
+        $processingFeePesewas = $totalPesewas - $entryFeePesewas;
 
         return [
-            'base_price' => round($basePrice, 2),
+            'base_price' => $basePesewas / 100,
             'entry_type' => $entryType,
             'entry_multiplier' => $entryMultiplier,
-            'entry_fee' => round($entryFee, 2),
+            'entry_fee' => $entryFeePesewas / 100,
             'visa_channel' => $visaChannel,
             'service_tier' => $serviceTierCode,
             'tier_multiplier' => $tierMultiplier,
-            'additional_fee' => round($additionalFee, 2),
-            'processing_fee' => round($processingFee, 2),
-            'total' => round($total, 2),
+            'additional_fee' => $additionalFeePesewas / 100,
+            'processing_fee' => $processingFeePesewas,
+            'total' => $totalPesewas,
+            'total_pesewas' => $totalPesewas,
             'formula' => $this->getFormulaDescription($visaChannel, $entryType, $serviceTierCode),
         ];
     }
@@ -141,15 +131,15 @@ class PricingService
      */
     protected function getFormulaDescription(string $visaChannel, string $entryType, string $serviceTierCode): string
     {
-        $basePrice = self::BASE_PRICE;
+        $base = self::BASE_PRICE_PESEWAS / 100;
         $entryMult = $this->getEntryMultiplier($entryType);
         $tierMult = $this->getTierMultiplier($visaChannel, $serviceTierCode);
 
         if ($visaChannel === 'e-visa') {
-            return "{$basePrice} × {$entryMult} × {$tierMult}";
+            return "{$base} × {$entryMult} × {$tierMult}";
         }
 
-        return "{$basePrice} × {$entryMult}";
+        return "{$base} × {$entryMult}";
     }
 
     /**
@@ -158,31 +148,28 @@ class PricingService
     public function calculateAndUpdateApplicationFee(Application $application): Application
     {
         $pricing = $this->calculatePrice($application);
+        $totalPesewas = (int) $pricing['total_pesewas'];
+        $processingPesewas = (int) $pricing['processing_fee'];
 
         $application->update([
-            'total_fee' => $pricing['total'],
-            'processing_fee' => $pricing['processing_fee'],
-            'government_fee' => 0, // Can be configured separately if needed
-            'platform_fee' => 0,   // Can be configured separately if needed
+            'total_fee' => $totalPesewas,
+            'processing_fee' => $processingPesewas,
+            'government_fee' => 0,
+            'platform_fee' => 0,
         ]);
 
         return $application->fresh();
     }
 
     /**
-     * Validate that a submitted price matches the calculated price.
-     * 
-     * @param Application $application
-     * @param float $submittedPrice
-     * @param float $tolerance Acceptable difference (for rounding)
-     * @return bool
+     * Validate that submitted pesewas matches the calculated fee.
      */
-    public function validatePrice(Application $application, float $submittedPrice, float $tolerance = 0.01): bool
+    public function validatePrice(Application $application, int $submittedPesewas, int $tolerancePesewas = 1): bool
     {
         $pricing = $this->calculatePrice($application);
-        $calculatedPrice = $pricing['total'];
+        $calculatedPesewas = (int) $pricing['total_pesewas'];
 
-        return abs($calculatedPrice - $submittedPrice) <= $tolerance;
+        return abs($calculatedPesewas - $submittedPesewas) <= $tolerancePesewas;
     }
 
     /**
@@ -227,47 +214,16 @@ class PricingService
      */
     public function getExamplePrices(): array
     {
+        $base = self::BASE_PRICE_PESEWAS / 100;
         return [
-            [
-                'description' => 'E-Visa, Single Entry, Standard',
-                'calculation' => '260 × 1.0 × 1.0',
-                'price' => 260.00,
-            ],
-            [
-                'description' => 'E-Visa, Single Entry, Priority',
-                'calculation' => '260 × 1.0 × 1.3',
-                'price' => 338.00,
-            ],
-            [
-                'description' => 'E-Visa, Single Entry, Express',
-                'calculation' => '260 × 1.0 × 1.7',
-                'price' => 442.00,
-            ],
-            [
-                'description' => 'E-Visa, Multiple Entry, Standard',
-                'calculation' => '260 × 1.8 × 1.0',
-                'price' => 468.00,
-            ],
-            [
-                'description' => 'E-Visa, Multiple Entry, Priority',
-                'calculation' => '260 × 1.8 × 1.3',
-                'price' => 608.40,
-            ],
-            [
-                'description' => 'E-Visa, Multiple Entry, Express',
-                'calculation' => '260 × 1.8 × 1.7',
-                'price' => 795.60,
-            ],
-            [
-                'description' => 'Regular Visa, Single Entry',
-                'calculation' => '260 × 1.0',
-                'price' => 260.00,
-            ],
-            [
-                'description' => 'Regular Visa, Multiple Entry',
-                'calculation' => '260 × 1.8',
-                'price' => 468.00,
-            ],
+            ['description' => 'E-Visa, Single Entry, Standard', 'calculation' => "{$base} × 1.0 × 1.0", 'price' => 260.00],
+            ['description' => 'E-Visa, Single Entry, Priority', 'calculation' => "{$base} × 1.0 × 1.3", 'price' => 338.00],
+            ['description' => 'E-Visa, Single Entry, Express', 'calculation' => "{$base} × 1.0 × 1.7", 'price' => 442.00],
+            ['description' => 'E-Visa, Multiple Entry, Standard', 'calculation' => "{$base} × 1.8 × 1.0", 'price' => 468.00],
+            ['description' => 'E-Visa, Multiple Entry, Priority', 'calculation' => "{$base} × 1.8 × 1.3", 'price' => 608.40],
+            ['description' => 'E-Visa, Multiple Entry, Express', 'calculation' => "{$base} × 1.8 × 1.7", 'price' => 795.60],
+            ['description' => 'Regular Visa, Single Entry', 'calculation' => "{$base} × 1.0", 'price' => 260.00],
+            ['description' => 'Regular Visa, Multiple Entry', 'calculation' => "{$base} × 1.8", 'price' => 468.00],
         ];
     }
 }

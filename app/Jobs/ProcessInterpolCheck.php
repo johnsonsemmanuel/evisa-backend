@@ -3,77 +3,83 @@
 namespace App\Jobs;
 
 use App\Models\Application;
+use App\Models\InterpolCheck;
 use App\Services\AeropassService;
-use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Foundation\Bus\Dispatchable;
-use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
-class ProcessInterpolCheck implements ShouldQueue
+class ProcessInterpolCheck extends CriticalJob implements ShouldBeUnique
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use SerializesModels;
 
-    public int $tries = 3;
-    public int $backoff = 60; // 1 minute backoff between retries
+    public int $uniqueFor = 3600; // Lock for 1 hour
 
     public function __construct(
         private int $applicationId
-    ) {}
+    ) {
+        $this->onQueue('critical');
+    }
+
+    public function uniqueId(): string
+    {
+        return 'aeropass:' . $this->applicationId;
+    }
+
+    protected function getApplicationId(): ?int
+    {
+        return $this->applicationId;
+    }
+
+    protected function getApplication(): ?Application
+    {
+        return Application::find($this->applicationId);
+    }
 
     public function handle(AeropassService $aeropassService): void
     {
         $application = Application::find($this->applicationId);
-        
+
         if (!$application) {
-            Log::error('Application not found for Interpol check', [
-                'application_id' => $this->applicationId,
-            ]);
+            Log::error('Application not found for Interpol check', ['application_id' => $this->applicationId]);
             return;
         }
 
-        // Skip if Aeropass is disabled
         if (!config('services.aeropass.enabled')) {
-            Log::info('Aeropass integration disabled, skipping Interpol check', [
-                'application_id' => $this->applicationId,
-            ]);
+            Log::info('Aeropass integration disabled, skipping Interpol check', ['application_id' => $this->applicationId]);
             return;
         }
 
-        // Skip if application is not in a state that requires Interpol check
-        if (!in_array($application->status, ['submitted', 'under_review', 'pending_approval'])) {
+        if (!in_array($application->status->value ?? $application->status, ['submitted', 'under_review', 'pending_approval'])) {
             Log::info('Application status does not require Interpol check', [
                 'application_id' => $this->applicationId,
-                'status' => $application->status,
+                'status' => $application->status->value ?? $application->status,
             ]);
             return;
         }
 
-        try {
-            $interpolCheck = $aeropassService->submitInterpolCheck($application);
-            
-            Log::info('Interpol check job completed', [
-                'application_id' => $this->applicationId,
-                'interpol_check_id' => $interpolCheck->id,
-                'status' => $interpolCheck->status,
-            ]);
-            
-        } catch (\Exception $e) {
-            Log::error('Interpol check job failed', [
-                'application_id' => $this->applicationId,
-                'error' => $e->getMessage(),
-            ]);
-            
-            throw $e; // Re-throw to trigger retry mechanism
-        }
+        $interpolCheck = $aeropassService->submitInterpolCheck($application);
+
+        Log::info('Interpol check job completed', [
+            'application_id' => $this->applicationId,
+            'interpol_check_id' => $interpolCheck->id,
+            'status' => $interpolCheck->status,
+        ]);
     }
 
-    public function failed(\Throwable $exception): void
+    protected function handleApplicationFailure(Application $application, Throwable $exception): void
     {
-        Log::error('Interpol check job failed permanently', [
-            'application_id' => $this->applicationId,
-            'error' => $exception->getMessage(),
+        InterpolCheck::where('application_id', $application->id)->update([
+            'status' => 'failed',
+            'last_error' => $exception->getMessage(),
         ]);
+        if ($application->risk_screening_notes) {
+            $application->update([
+                'risk_screening_notes' => $application->risk_screening_notes . ' [Aeropass check permanently failed: ' . $exception->getMessage() . ']',
+            ]);
+        } else {
+            $application->update(['risk_screening_notes' => 'Aeropass check permanently failed. Manual review required.']);
+        }
     }
 }

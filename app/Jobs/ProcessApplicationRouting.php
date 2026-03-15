@@ -4,24 +4,27 @@ namespace App\Jobs;
 
 use App\Models\Application;
 use App\Services\ApplicationRoutingService;
-use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Foundation\Bus\Dispatchable;
-use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 
-class ProcessApplicationRouting implements ShouldQueue
+class ProcessApplicationRouting extends BaseJob
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
-
-    public int $tries = 3;
-    public int $backoff = 30;
+    use SerializesModels;
 
     public function __construct(
         public Application $application,
     ) {
-        $this->onQueue('routing');
+        $this->onQueue('default');
+    }
+
+    protected function getApplicationId(): ?int
+    {
+        return $this->application->id;
+    }
+
+    protected function getApplication(): ?Application
+    {
+        return $this->application;
     }
 
     public function handle(ApplicationRoutingService $routingService): void
@@ -32,16 +35,10 @@ class ProcessApplicationRouting implements ShouldQueue
 
         Log::info("Application {$this->application->reference_number} routed to {$this->application->assigned_agency} as {$this->application->tier}");
 
-        // Dispatch notification to the assigned agency
         SendNotification::dispatch(
             $this->application,
             'new_application_assigned',
-            ['agency' => $this->application->assigned_agency]
-        );
-    }
-
-    public function failed(\Throwable $exception): void
-    {
-        Log::error("Failed to route application {$this->application->reference_number}: {$exception->getMessage()}");
+            ['agency' => $this->application->assigned_agency?->value ?? $this->application->assigned_agency]
+        )->onQueue('default');
     }
 }

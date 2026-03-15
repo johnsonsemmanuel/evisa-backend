@@ -93,6 +93,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Priority Queues (for Supervisor / Horizon)
+    |--------------------------------------------------------------------------
+    |
+    | Process queues in this order: critical first, then default, then low.
+    | Example: php artisan queue:work redis --queue=critical,default,low
+    | Horizon: define same order in config/horizon.php for each worker.
+    |
+    */
+    'priority_queues' => [
+        'critical',  // Payment callbacks, visa issuance, Interpol/Sumsub, risk scoring
+        'default',   // Emails, document processing, notifications, routing
+        'low',       // Reports, analytics, reconciliation, cleanup, SLA checks
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Job Batching
     |--------------------------------------------------------------------------
     |

@@ -8,6 +8,7 @@ use App\Models\Payment;
 use App\Services\MultiPaymentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class PaymentController extends Controller
 {
@@ -32,9 +33,24 @@ class PaymentController extends Controller
      */
     public function initialize(Request $request, Application $application): JsonResponse
     {
-        // Verify ownership
+        // SECURITY: Verify ownership - CRITICAL for preventing IDOR attacks
         if ($application->user_id !== $request->user()->id) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+            // Log potential IDOR attack attempt
+            Log::warning('Potential IDOR attack: User attempted to initialize payment for application they do not own', [
+                'user_id' => $request->user()->id,
+                'user_email' => $request->user()->email,
+                'attempted_application_id' => $application->id,
+                'application_owner_id' => $application->user_id,
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+                'route' => $request->route()->getName(),
+                'timestamp' => now()->toISOString(),
+            ]);
+
+            return response()->json([
+                'message' => 'Unauthorized',
+                'error' => 'You do not have permission to access this application'
+            ], 403);
         }
 
         // Verify application exists and is in a payable state
@@ -87,9 +103,24 @@ class PaymentController extends Controller
      */
     public function history(Request $request, Application $application): JsonResponse
     {
-        // Verify ownership or admin
-        if ($application->user_id !== $request->user()->id && !$request->user()->isAdmin()) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+        // SECURITY: Verify ownership or admin - CRITICAL for preventing IDOR attacks
+        if ($application->user_id !== $request->user()->id && !$request->user()->hasRole('admin')) {
+            // Log potential IDOR attack attempt
+            Log::warning('Potential IDOR attack: User attempted to access payment history for application they do not own', [
+                'user_id' => $request->user()->id,
+                'user_email' => $request->user()->email,
+                'attempted_application_id' => $application->id,
+                'application_owner_id' => $application->user_id,
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+                'route' => $request->route()->getName(),
+                'timestamp' => now()->toISOString(),
+            ]);
+
+            return response()->json([
+                'message' => 'Unauthorized',
+                'error' => 'You do not have permission to access this application\'s payment history'
+            ], 403);
         }
 
         $payments = Payment::where('application_id', $application->id)
@@ -127,9 +158,25 @@ class PaymentController extends Controller
             return response()->json(['message' => 'Bank transfer payment not found'], 404);
         }
 
-        // Verify ownership
+        // SECURITY: Verify ownership - CRITICAL for preventing IDOR attacks
         if ($payment->user_id !== $request->user()->id) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+            // Log potential IDOR attack attempt
+            Log::warning('Potential IDOR attack: User attempted to upload proof for payment they do not own', [
+                'user_id' => $request->user()->id,
+                'user_email' => $request->user()->email,
+                'attempted_payment_id' => $payment->id,
+                'payment_owner_id' => $payment->user_id,
+                'payment_reference' => $validated['reference'],
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+                'route' => $request->route()->getName(),
+                'timestamp' => now()->toISOString(),
+            ]);
+
+            return response()->json([
+                'message' => 'Unauthorized',
+                'error' => 'You do not have permission to upload proof for this payment'
+            ], 403);
         }
 
         // Store proof
@@ -185,10 +232,16 @@ class PaymentController extends Controller
     }
 
     /**
-     * Handle test payment callback (for development).
+     * Handle test payment callback (for development ONLY).
+     * SECURITY: Disabled in production.
      */
     public function testPaymentCallback(Request $request): JsonResponse
     {
+        // CRITICAL: Only allow in development/testing environments
+        if (!app()->environment('local', 'testing', 'development')) {
+            abort(404);
+        }
+
         $validated = $request->validate([
             'reference' => 'required|string',
             'status' => 'required|string|in:success,failed',
@@ -202,9 +255,13 @@ class PaymentController extends Controller
 
         if ($validated['status'] === 'success') {
             $payment->update([
-                'status' => 'completed',
+                'status' => 'paid',
                 'paid_at' => now(),
                 'provider_reference' => 'TEST-' . now()->timestamp,
+                'provider_response' => [
+                    'test_mode' => true,
+                    'message' => 'Test payment completed',
+                ],
             ]);
 
             $this->paymentService->onPaymentSuccess($payment);
@@ -215,7 +272,13 @@ class PaymentController extends Controller
                 'payment' => $payment->fresh(),
             ]);
         } else {
-            $payment->update(['status' => 'failed']);
+            $payment->update([
+                'status' => 'failed',
+                'provider_response' => [
+                    'test_mode' => true,
+                    'message' => 'Test payment failed',
+                ],
+            ]);
 
             return response()->json([
                 'success' => false,

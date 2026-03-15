@@ -13,7 +13,6 @@ class ApplicationService
 {
     public function __construct(
         protected ApplicationRoutingService $routingService,
-        protected PaymentService $paymentService,
     ) {}
 
     /**
@@ -247,9 +246,9 @@ class ApplicationService
         'pending_payment'            => ['paid_submitted', 'cancelled'],
         'paid_submitted'             => ['submitted', 'cancelled'],
         'submitted'                  => ['under_review', 'pending_approval', 'additional_info_requested', 'denied', 'cancelled'],
-        'under_review'               => ['pending_approval', 'additional_info_requested', 'escalated', 'approved', 'denied'],
+        'under_review'               => ['pending_approval', 'additional_info_requested', 'escalated'],
         'additional_info_requested'  => ['under_review', 'cancelled'],
-        'escalated'                  => ['under_review', 'pending_approval', 'additional_info_requested', 'approved', 'denied'],
+        'escalated'                  => ['under_review', 'pending_approval', 'additional_info_requested'],
         'pending_approval'           => ['approved', 'denied', 'additional_info_requested', 'under_review', 'escalated'],
         'approved'                   => ['issued', 'under_review'],
         'denied'                     => ['under_review'],

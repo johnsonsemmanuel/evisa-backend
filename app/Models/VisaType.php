@@ -37,10 +37,11 @@ class VisaType extends Model
     protected function casts(): array
     {
         return [
-            'base_fee'                  => 'decimal:2',
-            'multiple_entry_fee'        => 'decimal:2',
-            'government_fee'            => 'decimal:2',
-            'platform_fee'              => 'decimal:2',
+            'entry_type'                => \App\Enums\EntryType::class,
+            'base_fee'                  => 'integer',  // pesewas (BIGINT)
+            'multiple_entry_fee'        => 'integer',
+            'government_fee'            => 'integer',
+            'platform_fee'              => 'integer',
             'is_active'                 => 'boolean',
             'sort_order'                => 'integer',
             'default_processing_days'   => 'integer',
@@ -74,11 +75,11 @@ class VisaType extends Model
 
     public function applications(): HasMany
     {
-        return $this->hasMany(Application::class);
+        return $this->hasMany(Application::class, 'visa_type_id');
     }
 
     public function tierRules(): HasMany
     {
-        return $this->hasMany(TierRule::class);
+        return $this->hasMany(TierRule::class, 'visa_type_id');
     }
 }

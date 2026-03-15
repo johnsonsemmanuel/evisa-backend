@@ -2,29 +2,36 @@
 
 namespace App\Models;
 
+use App\Casts\EncryptedString;
+use App\Models\Concerns\HasBlindIndex;
+use App\Models\Scopes\AgencyOwnershipScope;
+use App\Models\Scopes\ApplicantOwnershipScope;
 use App\Traits\Auditable;
-use App\Traits\EncryptsPii;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Eloquent\Builder;
 
 class Application extends Model
 {
-    use HasFactory, SoftDeletes, Auditable, EncryptsPii;
+    use HasFactory, SoftDeletes, Auditable, HasBlindIndex;
 
-    protected $encryptedFields = [
-        'first_name_encrypted',
-        'last_name_encrypted',
-        'date_of_birth_encrypted',
-        'passport_number_encrypted',
-        'nationality_encrypted',
-        'email_encrypted',
-        'phone_encrypted',
-        'profession_encrypted',
-    ];
+    /**
+     * The "booted" method of the model.
+     * 
+     * SECURITY: Register global scopes for IDOR protection (LAYER 3 & 4)
+     */
+    protected static function booted(): void
+    {
+        // LAYER 3: Applicant ownership enforcement
+        static::addGlobalScope(new ApplicantOwnershipScope());
+        
+        // LAYER 4: Officer agency/mission isolation
+        static::addGlobalScope(new AgencyOwnershipScope());
+    }
 
     protected $fillable = [
         'reference_number',
@@ -57,10 +64,6 @@ class Application extends Model
         'visited_country_1',
         'visited_country_2',
         'visited_country_3',
-        'status',
-        'tier',
-        'assigned_agency',
-        'assigned_officer_id',
         'current_step',
         'submitted_at',
         'sla_deadline',
@@ -68,16 +71,11 @@ class Application extends Model
         'decision_notes',
         'evisa_file_path',
         'processing_tier',
-        'risk_screening_status',
         'risk_screening_notes',
         'evisa_qr_code',
-        'reviewed_by_id',
         'reviewed_at',
-        'risk_score',
-        'risk_level',
         'risk_reasons',
         'risk_last_updated',
-        'watchlist_flagged',
         'risk_assessed_at',
         'service_tier_id',
         'total_fee',
@@ -90,20 +88,39 @@ class Application extends Model
         'health_yellow_fever_vaccinated',
         'health_chronic_conditions',
         'health_condition_details',
+        'health_declaration_travel_affected',
+        'health_declaration_affected_countries',
         'owner_mission_id',
-        'current_queue',
-        'reviewing_officer_id',
-        'approval_officer_id',
         'review_started_at',
         'review_completed_at',
         'approval_started_at',
         'approval_completed_at',
         'denial_reason_codes',
+        'aeropass_transaction_ref',
+        'aeropass_status',
+        'aeropass_submitted_at',
+        'aeropass_result_at',
+        'aeropass_raw_result',
+        'aeropass_retry_count',
     ];
 
     protected function casts(): array
     {
         return [
+            // PII Encryption - AES-256 using EncryptedString cast
+            'first_name_encrypted' => EncryptedString::class,
+            'last_name_encrypted' => EncryptedString::class,
+            'date_of_birth_encrypted' => EncryptedString::class,
+            'passport_number_encrypted' => EncryptedString::class,
+            'nationality_encrypted' => EncryptedString::class,
+            'email_encrypted' => EncryptedString::class,
+            'phone_encrypted' => EncryptedString::class,
+            'profession_encrypted' => EncryptedString::class,
+            
+            'sumsub_review_result' => \App\Enums\SumsubReviewResult::class,
+            'sumsub_verification_status' => \App\Enums\SumsubVerificationStatus::class,
+            
+            // Date/Time casts
             'intended_arrival' => 'date',
             'passport_issue_date' => 'date',
             'passport_expiry' => 'date',
@@ -114,15 +131,20 @@ class Application extends Model
             'risk_last_updated' => 'datetime',
             'review_started_at' => 'datetime',
             'review_completed_at' => 'datetime',
-            'approval_started_at' => 'datetime',
+'approval_started_at' => 'datetime',
             'approval_completed_at' => 'datetime',
+            'aeropass_submitted_at' => 'datetime',
+            'aeropass_result_at' => 'datetime',
+
+            // Other casts
             'watchlist_flagged' => 'boolean',
             'risk_reasons' => 'array',
             'denial_reason_codes' => 'array',
-            'total_fee' => 'decimal:2',
-            'government_fee' => 'decimal:2',
-            'platform_fee' => 'decimal:2',
-            'processing_fee' => 'decimal:2',
+            'health_declaration_travel_affected' => 'boolean',
+            'total_fee' => 'integer',        // pesewas (BIGINT)
+            'government_fee' => 'integer',
+            'platform_fee' => 'integer',
+            'processing_fee' => 'integer',
         ];
     }
 
@@ -149,52 +171,54 @@ class Application extends Model
     ];
 
     // ── Decrypted PII Accessors ──────────────────────────────
+    // These accessors provide convenient access to encrypted fields
+    // The EncryptedString cast handles the actual encryption/decryption
 
     public function getFirstNameAttribute(): ?string
     {
-        return $this->getAttribute('first_name_encrypted');
+        return $this->first_name_encrypted;
     }
 
     public function getLastNameAttribute(): ?string
     {
-        return $this->getAttribute('last_name_encrypted');
+        return $this->last_name_encrypted;
     }
 
     public function getDateOfBirthAttribute(): ?string
     {
-        return $this->getAttribute('date_of_birth_encrypted');
+        return $this->date_of_birth_encrypted;
     }
 
     public function getPassportNumberAttribute(): ?string
     {
-        return $this->getAttribute('passport_number_encrypted');
+        return $this->passport_number_encrypted;
     }
 
     public function getNationalityAttribute(): ?string
     {
-        return $this->getAttribute('nationality_encrypted');
+        return $this->nationality_encrypted;
     }
 
     public function getEmailAttribute(): ?string
     {
-        return $this->getAttribute('email_encrypted');
+        return $this->email_encrypted;
     }
 
     public function getPhoneAttribute(): ?string
     {
-        return $this->getAttribute('phone_encrypted');
+        return $this->phone_encrypted;
     }
 
     public function getProfessionAttribute(): ?string
     {
-        return $this->getAttribute('profession_encrypted');
+        return $this->profession_encrypted;
     }
 
     // ── Relationships ─────────────────────────────────────
 
     public function user(): BelongsTo
     {
-        return $this->belongsTo(User::class);
+        return $this->belongsTo(User::class, 'user_id');
     }
 
     /**
@@ -208,17 +232,17 @@ class Application extends Model
 
     public function visaType(): BelongsTo
     {
-        return $this->belongsTo(VisaType::class);
+        return $this->belongsTo(VisaType::class, 'visa_type_id');
     }
 
     public function serviceTier(): BelongsTo
     {
-        return $this->belongsTo(ServiceTier::class);
+        return $this->belongsTo(ServiceTier::class, 'service_tier_id');
     }
 
     public function riskAssessment(): HasOne
     {
-        return $this->hasOne(RiskAssessment::class);
+        return $this->hasOne(RiskAssessment::class, 'application_id');
     }
 
     public function assignedOfficer(): BelongsTo
@@ -248,7 +272,15 @@ class Application extends Model
 
     public function documents(): HasMany
     {
-        return $this->hasMany(ApplicationDocument::class);
+        return $this->hasMany(ApplicationDocument::class, 'application_id');
+    }
+
+    /**
+     * RELATIONSHIP 3: Get document by type (scoped query helper)
+     */
+    public function documentByType(string $type): ?ApplicationDocument
+    {
+        return $this->documents()->where('document_type', $type)->first();
     }
 
     /**
@@ -278,30 +310,206 @@ class Application extends Model
 
     public function payment(): HasOne
     {
-        return $this->hasOne(Payment::class)->latestOfMany();
+        return $this->hasOne(Payment::class, 'application_id')->latestOfMany();
     }
 
     public function payments(): HasMany
     {
-        return $this->hasMany(Payment::class);
+        return $this->hasMany(Payment::class, 'application_id');
+    }
+
+    /**
+     * RELATIONSHIP 2: Get successful payment (status = 'paid')
+     */
+    public function successfulPayment(): HasOne
+    {
+        return $this->hasOne(Payment::class, 'application_id')->where('status', 'paid')->latestOfMany();
     }
 
     public function statusHistory(): HasMany
     {
-        return $this->hasMany(ApplicationStatusHistory::class)->orderBy('created_at', 'desc');
+        return $this->hasMany(ApplicationStatusHistory::class, 'application_id')->orderBy('created_at', 'desc');
     }
 
     public function internalNotes(): HasMany
     {
-        return $this->hasMany(InternalNote::class)->orderBy('created_at', 'desc');
+        return $this->hasMany(InternalNote::class, 'application_id')->orderBy('created_at', 'desc');
     }
 
     public function interpolCheck(): HasOne
     {
-        return $this->hasOne(InterpolCheck::class);
+        return $this->hasOne(InterpolCheck::class, 'application_id');
     }
 
-    // ── Helpers ───────────────────────────────────────────
+    /**
+     * RELATIONSHIP 4: Application → AuditLog (one-to-many)
+     * Get audit logs specifically for this application
+     */
+    public function auditLogs(): HasMany
+    {
+        return $this->hasMany(AuditLog::class, 'application_id')->orderBy('created_at', 'asc');
+    }
+
+    /**
+     * RELATIONSHIP 5: Application → RiskScore (one-to-many with history)
+     * Get all risk scores for this application (history)
+     */
+    public function riskScores(): HasMany
+    {
+        return $this->hasMany(RiskScore::class, 'application_id')->orderBy('assessed_at', 'desc');
+    }
+
+    /**
+     * RELATIONSHIP 5: Get current risk score
+     */
+    public function currentRiskScore(): HasOne
+    {
+        return $this->hasOne(RiskScore::class, 'application_id')->where('is_current', true);
+    }
+
+    /**
+     * RELATIONSHIP 9: BorderVerification → Application (one-to-one)
+     */
+    public function borderVerification(): HasOne
+    {
+        return $this->hasOne(BorderVerification::class, 'application_id');
+    }
+
+    // ── State Machine Methods ────────────────────────────
+
+    /**
+     * Transition the application to a new status with validation.
+     *
+     * Accepts either an ApplicationStatus enum or a plain string.
+     *
+     * @throws \App\Exceptions\InvalidStatusTransitionException
+     */
+    public function transitionTo(\App\Enums\ApplicationStatus|string $newStatus): void
+    {
+        $newEnum = $newStatus instanceof \App\Enums\ApplicationStatus
+            ? $newStatus
+            : \App\Enums\ApplicationStatus::tryFrom($newStatus);
+
+        if (!$newEnum) {
+            throw new \InvalidArgumentException("Invalid application status: {$newStatus}");
+        }
+
+        $currentEnum = \App\Enums\ApplicationStatus::tryFrom($this->status);
+
+        if (!$currentEnum || !$currentEnum->canTransitionTo($newEnum)) {
+            throw new \App\Exceptions\InvalidStatusTransitionException(
+                "Cannot transition from {$this->status} to {$newEnum->value}"
+            );
+        }
+
+        $oldStatusValue = $this->status;
+        $this->forceFill(['status' => $newEnum->value])->save();
+
+        $this->statusHistory()->create([
+            'from_status' => $oldStatusValue,
+            'to_status' => $newEnum->value,
+            'changed_by' => auth()->id(),
+            'notes' => "Status changed from {$currentEnum->label()} to {$newEnum->label()}",
+        ]);
+
+        $this->handleStatusTransition($newEnum);
+    }
+
+    private function handleStatusTransition(\App\Enums\ApplicationStatus $to): void
+    {
+        match($to) {
+            \App\Enums\ApplicationStatus::Submitted => $this->handleSubmission(),
+            \App\Enums\ApplicationStatus::UnderReview => $this->handleReviewStart(),
+            \App\Enums\ApplicationStatus::Approved => $this->handleApproval(),
+            \App\Enums\ApplicationStatus::Rejected => $this->handleRejection(),
+            \App\Enums\ApplicationStatus::VisaIssued => $this->handleVisaIssuance(),
+            default => null,
+        };
+    }
+
+    private function handleSubmission(): void
+    {
+        $this->update([
+            'submitted_at' => now(),
+            'sla_deadline' => now()->addBusinessDays($this->visaType->processing_days ?? 5),
+        ]);
+
+        // Trigger risk assessment
+        if (config('services.risk_scoring.enabled')) {
+            \App\Jobs\ProcessRiskAssessment::dispatch($this);
+        }
+    }
+
+    private function handleReviewStart(): void
+    {
+        $this->update(['review_started_at' => now()]);
+    }
+
+    private function handleApproval(): void
+    {
+        $this->update([
+            'decided_at' => now(),
+            'approval_completed_at' => now(),
+        ]);
+
+        // Generate e-visa document
+        \App\Jobs\GenerateEVisaPdf::dispatch($this);
+    }
+
+    private function handleRejection(): void
+    {
+        $this->update(['decided_at' => now()]);
+        
+        // Send rejection notification
+        $this->user->notify(new \App\Notifications\ApplicationRejectedNotification($this));
+    }
+
+    private function handleVisaIssuance(): void
+    {
+        // Create travel authorization
+        if (!$this->travelAuthorization) {
+            \App\Models\TravelAuthorization::create([
+                'taid' => $this->taid,
+                'application_id' => $this->id,
+                'authorization_type' => \App\Enums\AuthorizationType::VISA,
+                'status' => 'active',
+                'issued_at' => now(),
+                'expires_at' => now()->addDays($this->visaType->validity_days ?? 90),
+            ]);
+        }
+    }
+
+    // ── Status Helper Methods ─────────────────────────────
+
+    public function canBeSubmitted(): bool
+    {
+        return $this->status === 'draft';
+    }
+
+    public function canBeReviewed(): bool
+    {
+        return in_array($this->status, ['submitted', 'pending_documents']);
+    }
+
+    public function canBeApproved(): bool
+    {
+        return in_array($this->status, ['under_review', 'approved_pending']);
+    }
+
+    public function canBeRejected(): bool
+    {
+        return !in_array($this->status, ['approved', 'rejected', 'withdrawn', 'visa_issued', 'expired']);
+    }
+
+    public function isInProgress(): bool
+    {
+        return !in_array($this->status, ['approved', 'rejected', 'withdrawn', 'visa_issued', 'expired', 'draft']);
+    }
+
+    public function isCompleted(): bool
+    {
+        return in_array($this->status, ['approved', 'rejected', 'withdrawn', 'visa_issued', 'expired']);
+    }
 
     public static function generateReferenceNumber(): string
     {
@@ -312,7 +520,7 @@ class Application extends Model
 
     public function isPaid(): bool
     {
-        return $this->payment && $this->payment->status === 'completed';
+        return $this->payment && $this->payment->status === 'paid';
     }
 
     public function isWithinSla(): bool
@@ -409,4 +617,129 @@ class Application extends Model
             ->where('notes', 'like', "%assigned to {$agency}%")
             ->exists();
     }
+
+    // ==================== QUERY SCOPES ====================
+
+    /**
+     * Scope: Filter pending applications (submitted status)
+     */
+    public function scopePending(Builder $query): Builder
+    {
+        return $query->where('status', 'submitted');
+    }
+
+    /**
+     * Scope: Filter applications for a specific agency
+     */
+    public function scopeForAgency(Builder $query, int $agencyId): Builder
+    {
+        return $query->where('agency_id', $agencyId);
+    }
+
+    /**
+     * Scope: Filter applications for a specific applicant
+     */
+    public function scopeForApplicant(Builder $query, int $userId): Builder
+    {
+        return $query->where('user_id', $userId);
+    }
+
+    /**
+     * Scope: Filter applications requiring payment
+     */
+    public function scopePaymentRequired(Builder $query): Builder
+    {
+        return $query->where('status', 'pending_payment');
+    }
+
+    /**
+     * Scope: Filter high-risk applications
+     */
+    public function scopeHighRisk(Builder $query): Builder
+    {
+        return $query->whereHas('currentRiskScore', function($q) {
+            $q->whereIn('risk_level', ['high', 'critical']);
+        });
+    }
+
+    /**
+     * Scope: Filter applications assigned to GIS agency
+     */
+    public function scopeAssignedToGis($query)
+    {
+        return $query->where('assigned_agency', 'gis');
+    }
+
+    /**
+     * Scope: Filter applications that are approved or issued
+     */
+    public function scopeApprovedOrIssued($query)
+    {
+        return $query->whereIn('status', ['approved', 'issued']);
+    }
+
+    /**
+     * Scope: Filter completed applications (approved or denied)
+     */
+    public function scopeApprovedOrDenied($query)
+    {
+        return $query->whereIn('status', ['approved', 'denied']);
+    }
+
+    /**
+     * Scope: Filter applications in review (submitted or under_review)
+     */
+    public function scopeInReview($query)
+    {
+        return $query->whereIn('status', ['submitted', 'under_review']);
+    }
+
+    /**
+     * Scope: Filter applications pending decision (escalated or under_review)
+     */
+    public function scopePendingDecision($query)
+    {
+        return $query->whereIn('status', ['escalated', 'under_review']);
+    }
+
+    /**
+     * Scope: Eager load commonly used relations (visaType, payment)
+     */
+    public function scopeWithBasicRelations($query)
+    {
+        return $query->with(['visaType', 'payment']);
+    }
+
+    /**
+     * Scope: Eager load visa type and assigned officer details
+     */
+    public function scopeWithOfficerDetails($query)
+    {
+        return $query->with(['visaType', 'assignedOfficer:id,first_name,last_name']);
+    }
+
+    /**
+     * Scope: Eager load visa type and workflow officers (reviewing, approval)
+     */
+    public function scopeWithWorkflowDetails($query)
+    {
+        return $query->with(['visaType', 'reviewingOfficer', 'approvalOfficer']);
+    }
+
+    /**
+     * Scope: Eager load visa type and assigned officer for SLA monitoring
+     */
+    public function scopeWithSlaDetails($query)
+    {
+        return $query->with(['visaType', 'assignedOfficer']);
+    }
+
+    /**
+     * Dispatch async Aeropass nominal check (202 + callback). Use during review workflow.
+     */
+    public function dispatchAeropassCheck(): void
+    {
+        \App\Jobs\ProcessAeropassNominalCheck::dispatch($this)->onQueue('critical');
+    }
 }
+

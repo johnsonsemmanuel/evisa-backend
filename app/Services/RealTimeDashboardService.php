@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Events\ApplicationStatusChanged;
 use App\Events\DashboardMetricsUpdated;
 use App\Events\PaymentCompleted;
+use App\Events\PaymentConfirmed;
 use App\Models\Application;
 use App\Models\Payment;
 use App\Models\User;
@@ -21,8 +22,8 @@ class RealTimeDashboardService
         string $newStatus,
         ?string $notes = null
     ): void {
-        // Broadcast the status change event
-        broadcast(new ApplicationStatusChanged($application, $previousStatus, $newStatus, $notes));
+        // Broadcast the status change event (application already has new status)
+        broadcast(new ApplicationStatusChanged($application, $previousStatus, $notes));
         
         // Update and broadcast metrics for affected agencies
         $this->updateAndBroadcastMetrics($application);
@@ -34,9 +35,42 @@ class RealTimeDashboardService
     public function broadcastPaymentCompleted(Payment $payment): void
     {
         broadcast(new PaymentCompleted($payment));
+        broadcast(new PaymentConfirmed($payment));
         
         // Update admin payment metrics
         $this->updateAndBroadcastPaymentMetrics();
+        
+        // Also update GIS metrics since they need to see payment data
+        $this->updateAndBroadcastGisPaymentMetrics();
+    }
+
+    /**
+     * Update payment metrics for GIS dashboard.
+     */
+    public function updateAndBroadcastGisPaymentMetrics(): void
+    {
+        $gisMetrics = $this->calculateGisMetrics();
+        
+        // Add payment data to GIS metrics
+        $gisMetrics['payments'] = $this->calculatePaymentMetrics();
+        
+        $this->cacheMetrics('gis', $gisMetrics);
+        broadcast(new DashboardMetricsUpdated('gis', $gisMetrics));
+    }
+
+    /**
+     * Calculate payment metrics.
+     */
+    protected function calculatePaymentMetrics(): array
+    {
+        return [
+            'total_collected' => Payment::where('status', 'completed')->sum('amount'),
+            'completed'       => Payment::where('status', 'completed')->count(),
+            'failed'          => Payment::where('status', 'failed')->count(),
+            'pending'         => Payment::where('status', 'pending')->count(),
+            'today_revenue'   => Payment::where('status', 'completed')->whereDate('updated_at', today())->sum('amount'),
+            'today_count'     => Payment::where('status', 'completed')->whereDate('updated_at', today())->count(),
+        ];
     }
 
     /**
@@ -71,7 +105,7 @@ class RealTimeDashboardService
     {
         $base = Application::where('assigned_agency', 'gis');
 
-        return [
+        $metrics = [
             'pending_review'    => (clone $base)->whereIn('status', ['submitted', 'under_review'])->count(),
             'in_review'         => (clone $base)->where('status', 'under_review')->count(),
             'pending_approval'  => (clone $base)->where('status', 'pending_approval')->count(),
@@ -97,9 +131,14 @@ class RealTimeDashboardService
                   });
             })->count(),
             'flagged_etas'      => (clone $base)->where('visa_type_id', function($query) {
-                $query->select('id')->from('visa_types')->where('code', 'ETA');
+                $query->select('id')->from('visa_types')->where('slug', 'eta');
             })->where('status', 'flagged')->count(),
         ];
+
+        // Add payment metrics to GIS dashboard
+        $metrics['payments'] = $this->calculatePaymentMetrics();
+
+        return $metrics;
     }
 
     /**
@@ -141,7 +180,7 @@ class RealTimeDashboardService
                   });
             })->count(),
             'flagged_etas'      => (clone $base)->where('visa_type_id', function($query) {
-                $query->select('id')->from('visa_types')->where('code', 'ETA');
+                $query->select('id')->from('visa_types')->where('slug', 'eta');
             })->where('status', 'flagged')->count(),
         ];
     }
@@ -199,8 +238,15 @@ class RealTimeDashboardService
      */
     protected function cacheMetrics(string $agency, array $metrics, ?int $missionId = null): void
     {
-        $cacheKey = $missionId ? "dashboard.metrics.{$agency}.mission.{$missionId}" : "dashboard.metrics.{$agency}";
-        Cache::put($cacheKey, $metrics, now()->addMinutes(5));
+        $cacheKey = CacheService::dashboardKey($agency, $missionId);
+        
+        // Use CacheService with dashboard TTL and tags
+        CacheService::remember(
+            $cacheKey,
+            CacheService::DASHBOARD_TTL,
+            fn() => $metrics,
+            [CacheService::TAG_DASHBOARD]
+        );
     }
 
     /**
@@ -208,16 +254,21 @@ class RealTimeDashboardService
      */
     public function getCachedMetrics(string $agency, ?int $missionId = null): array
     {
-        $cacheKey = $missionId ? "dashboard.metrics.{$agency}.mission.{$missionId}" : "dashboard.metrics.{$agency}";
+        $cacheKey = CacheService::dashboardKey($agency, $missionId);
         
-        return Cache::remember($cacheKey, now()->addMinutes(5), function () use ($agency, $missionId) {
-            return match ($agency) {
-                'gis' => $this->calculateGisMetrics(),
-                'mfa' => $this->calculateMfaMetrics($missionId),
-                'admin' => $this->calculateAdminMetrics(),
-                default => [],
-            };
-        });
+        return CacheService::remember(
+            $cacheKey,
+            CacheService::DASHBOARD_TTL,
+            function () use ($agency, $missionId) {
+                return match ($agency) {
+                    'gis' => $this->calculateGisMetrics(),
+                    'mfa' => $this->calculateMfaMetrics($missionId),
+                    'admin' => $this->calculateAdminMetrics(),
+                    default => [],
+                };
+            },
+            [CacheService::TAG_DASHBOARD]
+        );
     }
 
     /**
@@ -225,10 +276,8 @@ class RealTimeDashboardService
      */
     public function refreshAllMetrics(): void
     {
-        // Clear all cached metrics
-        Cache::forget('dashboard.metrics.gis');
-        Cache::forget('dashboard.metrics.mfa');
-        Cache::forget('dashboard.metrics.admin');
+        // Bust all dashboard caches using CacheService
+        CacheService::bustDashboard();
         
         // Calculate and broadcast fresh metrics
         $gisMetrics = $this->calculateGisMetrics();

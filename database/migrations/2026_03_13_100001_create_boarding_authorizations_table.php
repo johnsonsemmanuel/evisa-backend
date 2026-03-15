@@ -13,7 +13,7 @@ return new class extends Migration
     {
         Schema::create('boarding_authorizations', function (Blueprint $table) {
             $table->string('authorization_code', 30)->primary();
-            $table->text('passport_number'); // Encrypted
+            $table->string('passport_number', 255); // Changed from text to string for indexing
             $table->char('nationality', 2);
             $table->enum('authorization_type', ['ETA', 'VISA']);
             $table->string('eta_number', 30)->nullable();

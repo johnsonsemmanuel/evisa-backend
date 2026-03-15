@@ -13,13 +13,15 @@ class UserSeeder extends Seeder
      */
     public function run(): void
     {
+        $defaultPassword = env('DEFAULT_OFFICER_PASSWORD', 'ChangeMe123!');
+        
         // 1. GIS Officer
         User::firstOrCreate(
             ['email' => 'officer@gis.gov.gh'],
             [
                 'first_name' => 'GIS',
                 'last_name' => 'Officer',
-                'password' => Hash::make('password123'),
+                'password' => Hash::make($defaultPassword),
                 'role' => 'gis_officer',
                 'is_active' => true,
             ]
@@ -31,7 +33,7 @@ class UserSeeder extends Seeder
             [
                 'first_name' => 'MFA',
                 'last_name' => 'Reviewer',
-                'password' => Hash::make('password123'),
+                'password' => Hash::make($defaultPassword),
                 'role' => 'mfa_reviewer',
                 'is_active' => true,
             ]
@@ -43,7 +45,7 @@ class UserSeeder extends Seeder
             [
                 'first_name' => 'System',
                 'last_name' => 'Admin',
-                'password' => Hash::make('password123'),
+                'password' => Hash::make($defaultPassword),
                 'role' => 'admin',
                 'is_active' => true,
             ]
@@ -55,7 +57,7 @@ class UserSeeder extends Seeder
             [
                 'first_name' => 'John',
                 'last_name' => 'Doe',
-                'password' => Hash::make('password123'),
+                'password' => Hash::make(env('DEFAULT_APPLICANT_PASSWORD', 'TestUser123!')),
                 'role' => 'applicant',
                 'is_active' => true,
             ]
@@ -67,7 +69,7 @@ class UserSeeder extends Seeder
             [
                 'first_name' => 'Border',
                 'last_name' => 'Officer',
-                'password' => Hash::make('password123'),
+                'password' => Hash::make($defaultPassword),
                 'role' => 'border_officer',
                 'is_active' => true,
             ]
@@ -79,7 +81,7 @@ class UserSeeder extends Seeder
             [
                 'first_name' => 'Border',
                 'last_name' => 'Supervisor',
-                'password' => Hash::make('password123'),
+                'password' => Hash::make($defaultPassword),
                 'role' => 'border_supervisor',
                 'is_active' => true,
             ]
@@ -91,7 +93,7 @@ class UserSeeder extends Seeder
             [
                 'first_name' => 'Intelligence',
                 'last_name' => 'Officer',
-                'password' => Hash::make('password123'),
+                'password' => Hash::make($defaultPassword),
                 'role' => 'intelligence_officer',
                 'is_active' => true,
             ]

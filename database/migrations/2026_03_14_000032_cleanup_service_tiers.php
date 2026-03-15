@@ -13,14 +13,20 @@ return new class extends Migration
     public function up(): void
     {
         // Remove unwanted tiers (priority, fast_track, ultra_express)
-        DB::table('service_tiers')->whereIn('code', ['priority', 'fast_track', 'ultra_express'])->delete();
-
+        $unwantedTierIds = DB::table('service_tiers')
+            ->whereIn('code', ['priority', 'fast_track', 'ultra_express'])
+            ->pluck('id');
+        
         // Update applications using removed tiers to use standard
-        DB::table('applications')
-            ->whereHas('serviceTier', function($query) {
-                $query->whereIn('code', ['priority', 'fast_track', 'ultra_express']);
-            })
-            ->update(['service_tier_id' => DB::table('service_tiers')->where('code', 'standard')->value('id')]);
+        $standardTierId = DB::table('service_tiers')->where('code', 'standard')->value('id');
+        if ($standardTierId && $unwantedTierIds->isNotEmpty()) {
+            DB::table('applications')
+                ->whereIn('service_tier_id', $unwantedTierIds)
+                ->update(['service_tier_id' => $standardTierId]);
+        }
+        
+        // Delete unwanted tiers
+        DB::table('service_tiers')->whereIn('code', ['priority', 'fast_track', 'ultra_express'])->delete();
 
         // Ensure we have exactly 3 tiers with correct data
         $standardId = DB::table('service_tiers')->where('code', 'standard')->value('id');

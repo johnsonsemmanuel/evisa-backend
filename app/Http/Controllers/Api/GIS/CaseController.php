@@ -26,7 +26,7 @@ class CaseController extends Controller
     {
         $query = Application::where('assigned_agency', 'gis')
             ->with([
-                'visaType', 
+                'visaType:id,name', 
                 'assignedOfficer:id,first_name,last_name',
                 'reviewingOfficer:id,first_name,last_name',
                 'approvalOfficer:id,first_name,last_name',
@@ -59,7 +59,15 @@ class CaseController extends Controller
         ")->orderBy('sla_deadline', 'asc')
           ->paginate(20);
 
-        return response()->json($applications);
+        return response()->json([
+            'data' => \App\Http\Resources\GIS\CaseListResource::collection($applications->items()),
+            'meta' => [
+                'current_page' => $applications->currentPage(),
+                'last_page' => $applications->lastPage(),
+                'per_page' => $applications->perPage(),
+                'total' => $applications->total(),
+            ],
+        ]);
     }
 
     /**
@@ -74,20 +82,19 @@ class CaseController extends Controller
         }
 
         $application->load([
-            'visaType',
-            'documents',
-            'statusHistory.changedByUser',
-            'internalNotes.user',
-            'payment',
+            'visaType:id,name,processing_time_days',
+            'documents:id,application_id,document_type,verification_status,created_at',
+            'statusHistory.changedByUser:id,first_name,last_name',
+            'internalNotes.user:id,first_name,last_name',
+            'payment:id,application_id,amount,status,gateway,paid_at',
             'user:id,first_name,last_name,email',
-            'riskAssessment',
+            'riskAssessment:id,application_id,risk_score,risk_level,risk_reasons',
+            'assignedOfficer:id,first_name,last_name',
+            'reviewingOfficer:id,first_name,last_name',
+            'approvalOfficer:id,first_name,last_name',
         ]);
 
-        return response()->json([
-            'application'     => $application,
-            'sla_hours_left'  => $application->slaHoursRemaining(),
-            'is_within_sla'   => $application->isWithinSla(),
-        ]);
+        return response()->json(new \App\Http\Resources\GIS\CaseDetailResource($application));
     }
 
     /**
@@ -100,6 +107,7 @@ class CaseController extends Controller
         }
 
         $application->update(['assigned_officer_id' => $request->user()->id]);
+        broadcast(new \App\Events\OfficerAssigned($application->fresh(), $request->user()));
 
         return response()->json([
             'message'     => __('case.assigned'),
@@ -510,10 +518,18 @@ class CaseController extends Controller
             'officer_id' => 'required|integer|exists:users,id',
         ]);
 
-        $updated = Application::whereIn('id', $validated['application_ids'])
+        $applications = Application::whereIn('id', $validated['application_ids'])
             ->where('assigned_agency', 'gis')
             ->whereIn('status', ['submitted', 'under_review'])
-            ->update(['assigned_officer_id' => $validated['officer_id']]);
+            ->get();
+        $officer = \App\Models\User::find($validated['officer_id']);
+        foreach ($applications as $app) {
+            $app->update(['assigned_officer_id' => $validated['officer_id']]);
+            if ($officer) {
+                broadcast(new \App\Events\OfficerAssigned($app->fresh(), $officer));
+            }
+        }
+        $updated = $applications->count();
 
         return response()->json([
             'message' => "{$updated} applications assigned successfully",

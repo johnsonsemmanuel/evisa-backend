@@ -3,6 +3,7 @@
 .env
 .env.backup
 .env.production
+.env.staging
 .phpactor.json
 .phpunit.result.cache
 /.fleet
@@ -22,3 +23,12 @@
 Homestead.json
 Homestead.yaml
 Thumbs.db
+
+# Storage
+storage/logs/*.log
+storage/app/private/
+
+# MySQL dumps and backups
+*.sql
+*.sql.gz
+/database/backups/

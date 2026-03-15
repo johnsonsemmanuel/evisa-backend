@@ -18,6 +18,14 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Compliance BCC (government requirement)
+    |--------------------------------------------------------------------------
+    | Blind-copy all applicant-facing emails to this address for compliance.
+    */
+    'compliance_bcc' => env('MAIL_COMPLIANCE_BCC'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Mailer Configurations
     |--------------------------------------------------------------------------
     |
@@ -30,7 +38,7 @@ return [
     | your mailers below. You may also add additional mailers if needed.
     |
     | Supported: "smtp", "sendmail", "mailgun", "ses", "ses-v2",
-    |            "postmark", "resend", "log", "array",
+    |            "sendgrid", "postmark", "resend", "log", "array",
     |            "failover", "roundrobin"
     |
     */
@@ -51,6 +59,14 @@ return [
 
         'ses' => [
             'transport' => 'ses',
+        ],
+
+        'mailgun' => [
+            'transport' => 'mailgun',
+        ],
+
+        'sendgrid' => [
+            'transport' => 'sendgrid',
         ],
 
         'postmark' => [
@@ -114,5 +130,12 @@ return [
         'address' => env('MAIL_FROM_ADDRESS', 'hello@example.com'),
         'name' => env('MAIL_FROM_NAME', 'Example'),
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Finance / reconciliation alert address
+    |--------------------------------------------------------------------------
+    */
+    'finance_alert' => env('MAIL_FINANCE_ALERT', env('MAIL_FROM_ADDRESS')),
 
 ];
