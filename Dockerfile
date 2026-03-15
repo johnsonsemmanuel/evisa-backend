@@ -23,6 +23,7 @@ RUN apk add --no-cache \
     freetype-dev \
     libzip-dev \
     icu-dev \
+    linux-headers \
     tzdata \
     $PHPIZE_DEPS
 
@@ -51,7 +52,7 @@ RUN apk add --no-cache --virtual .build-deps $PHPIZE_DEPS \
     && apk del .build-deps
 
 # Clean build deps and keep only runtime libs for gd/zip/icu
-RUN apk del libpng-dev libjpeg-turbo-dev libwebp-dev freetype-dev libzip-dev icu-dev $PHPIZE_DEPS 2>/dev/null || true \
+RUN apk del libpng-dev libjpeg-turbo-dev libwebp-dev freetype-dev libzip-dev icu-dev linux-headers $PHPIZE_DEPS 2>/dev/null || true \
     && apk add --no-cache libpng libjpeg-turbo libwebp libzip libicu libfreetype \
     && rm -rf /var/cache/apk/* /tmp/pear
 
