@@ -1,34 +1,45 @@
-*.log
-.DS_Store
+# Environment
 .env
-.env.backup
-.env.production
-.env.staging
-.phpactor.json
-.phpunit.result.cache
+.env.*
+!.env.example
+
+# Logs
+*.log
+storage/logs/*.log
+
+# IDE
+.DS_Store
+Thumbs.db
 /.fleet
 /.idea
 /.nova
 /.phpunit.cache
 /.vscode
 /.zed
+.phpactor.json
+
+# PHP / Composer
+/vendor
 /auth.json
-/node_modules
+
+# Laravel build artifacts
 /public/build
 /public/hot
 /public/storage
-/storage/*.key
-/storage/pail
-/vendor
-Homestead.json
-Homestead.yaml
-Thumbs.db
+/node_modules
 
 # Storage
-storage/logs/*.log
+/storage/*.key
+/storage/pail
 storage/app/private/
 
-# MySQL dumps and backups
-*.sql
+# Test artifacts
+.phpunit.result.cache
+
+# Database dumps (but keep tracked SQL scripts)
 *.sql.gz
 /database/backups/
+
+# Legacy
+Homestead.json
+Homestead.yaml
